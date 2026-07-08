@@ -12,8 +12,9 @@ import inspect
 from unittest import mock
 from unittest.mock import AsyncMock
 
-from resq.http.clients import Requests, Session, _join_url, _normalize_path
-from resq.http.responses import AsyncResponse, Response
+from resq.http.clients import Requests, Session
+from resq.http.clients.clients import _join_url, _normalize_path
+from resq.http.responses.responses import AsyncResponse, Response
 
 from tests.http.conftest import FakeUnderlying
 
@@ -97,7 +98,7 @@ class TestHelpers:
 
 class TestRequests:
     def test_get_returns_response_without_raise_when_timeout_none(self):
-        with mock.patch("resq.http.clients.requests.request") as mock_request:
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
             mock_request.return_value = FakeUnderlying(status_code=500)
             client = Requests("https://api.example.com", timeout=5)
             resp = client.get("/health")
@@ -107,7 +108,7 @@ class TestRequests:
         mock_request.assert_called_once_with("GET", "https://api.example.com/health", timeout=5)
 
     async def test_aget_uses_long_lived_async_client(self):
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(
                 return_value=FakeUnderlying(status_code=200, engine="httpx"),
@@ -129,7 +130,7 @@ class TestRequests:
 
     def test_get_with_leading_slash_normalized_for_parity(self):
         client = Requests("https://api.example.com/v1", timeout=5)
-        with mock.patch("resq.http.clients.requests.request") as mock_request:
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
             mock_request.return_value = FakeUnderlying(status_code=200)
             client.get("/users/42")
 
@@ -142,7 +143,7 @@ class TestRequests:
 
     async def test_aget_with_leading_slash_normalized_for_parity(self):
         client = Requests("https://api.example.com/v1", timeout=5)
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(
                 return_value=FakeUnderlying(status_code=200, engine="httpx"),
@@ -164,7 +165,7 @@ class TestRequests:
         assert client._async_client is None
 
     async def test_async_context_manager_closes_client(self):
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(
                 return_value=FakeUnderlying(status_code=200, engine="httpx"),
@@ -184,8 +185,8 @@ class TestRequests:
 class TestSession:
     def test_session_routes_sync_through_held_session(self):
         with (
-            mock.patch("resq.http.clients.requests.Session") as mock_session_cls,
-            mock.patch("resq.http.clients.requests.request") as mock_module_request,
+            mock.patch("resq.http.clients.clients.requests.Session") as mock_session_cls,
+            mock.patch("resq.http.clients.clients.requests.request") as mock_module_request,
         ):
             mock_session = mock_session_cls.return_value
             mock_session.request.return_value = FakeUnderlying(status_code=200)
@@ -201,7 +202,7 @@ class TestSession:
         mock_module_request.assert_not_called()  # never the fresh-connection path
 
     async def test_session_aget_uses_long_lived_client(self):
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(
                 return_value=FakeUnderlying(status_code=200, engine="httpx"),

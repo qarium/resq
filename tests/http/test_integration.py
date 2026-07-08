@@ -22,17 +22,9 @@ from unittest.mock import AsyncMock
 
 import resq.http as http_cell
 import resq.http.clients as clients_module
-import resq.http.polling as polling_module
-import resq.http.responses as responses_module
-from resq.http import (
-    AsyncResponse,
-    BaseResponse,
-    Requests,
-    Response,
-    Session,
-    apoll,
-    poll,
-)
+import resq.http.polling.polling as polling_module
+import resq.http.responses.responses as responses_module
+from resq.http import AsyncResponse, BaseResponse, Requests, Response, Session
 
 from tests.http.conftest import FakeUnderlying
 
@@ -49,30 +41,33 @@ PROXIED = {
 
 
 class TestFacade:
-    def test_all_seven_symbols_importable_from_cell(self):
-        # The deferred Task 3 check: the live facade import resolves every name.
-        for name in ("Requests", "Session", "BaseResponse", "Response", "AsyncResponse", "poll", "apoll"):
+    def test_all_five_symbols_importable_from_cell(self):
+        # The live facade import resolves every re-exported name.
+        for name in ("Requests", "Session", "BaseResponse", "Response", "AsyncResponse"):
             assert hasattr(http_cell, name), f"resq.http missing {name}"
 
+    def test_polling_routines_not_reexported_from_cell(self):
+        # poll/apoll stay in resq.http.polling; the http facade does not carry them.
+        assert not hasattr(http_cell, "poll")
+        assert not hasattr(http_cell, "apoll")
+
     def test_symbols_originate_from_their_source_modules(self):
-        # Each imported facade name IS the object from its declared source module.
+        # Each re-exported facade name IS the object from its declared source module.
         assert Requests is clients_module.Requests
         assert Session is clients_module.Session
-        assert poll is polling_module.poll
-        assert apoll is polling_module.apoll
         assert BaseResponse is responses_module.BaseResponse
         assert Response is responses_module.Response
         assert AsyncResponse is responses_module.AsyncResponse
 
-    def test_facade_all_lists_the_seven_symbols(self):
-        expected = {"Requests", "Session", "BaseResponse", "Response", "AsyncResponse", "poll", "apoll"}
-        assert expected <= set(http_cell.__all__)
+    def test_facade_all_lists_the_five_symbols(self):
+        expected = {"Requests", "Session", "BaseResponse", "Response", "AsyncResponse"}
+        assert set(http_cell.__all__) == expected
 
 
 class TestCrossEngineParity:
     def test_sync_request_through_requests_proxies_engine_response(self):
         underlying = FakeUnderlying(json_return={"key": "value"}, **PROXIED)
-        with mock.patch("resq.http.clients.requests.request", return_value=underlying):
+        with mock.patch("resq.http.clients.clients.requests.request", return_value=underlying):
             client = Requests(BASE_URL, timeout=5)
             resp = client.get("/health")
 
@@ -88,7 +83,7 @@ class TestCrossEngineParity:
 
     async def test_async_request_through_session_aget_proxies_engine_response(self):
         underlying = FakeUnderlying(engine="httpx", json_return={"key": "value"}, **PROXIED)
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(return_value=underlying)
 
@@ -109,10 +104,10 @@ class TestCrossEngineParity:
         sync_underlying = FakeUnderlying(json_return={"a": 1}, **PROXIED)
         async_underlying = FakeUnderlying(engine="httpx", json_return={"a": 1}, **PROXIED)
 
-        with mock.patch("resq.http.clients.requests.request", return_value=sync_underlying):
+        with mock.patch("resq.http.clients.clients.requests.request", return_value=sync_underlying):
             sync_resp = Requests(BASE_URL, timeout=5).get("/health")
 
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(return_value=async_underlying)
             async_resp = await Session(BASE_URL, timeout=5).aget("/health")
@@ -127,7 +122,7 @@ class TestSyncPollingPath:
         sleeps = []
         monkeypatch.setattr(polling_module.time, "sleep", sleeps.append)
 
-        with mock.patch("resq.http.clients.requests.request") as mock_request:
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
             mock_request.side_effect = [
                 FakeUnderlying(status_code=503),
                 FakeUnderlying(status_code=200),
@@ -156,7 +151,7 @@ class TestAsyncPollingPath:
 
         monkeypatch.setattr(polling_module.asyncio, "sleep", fake_sleep)
 
-        with mock.patch("resq.http.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.request = AsyncMock(
                 side_effect=[

@@ -1,8 +1,9 @@
 # Clients — making requests
 
-**Domain.** Creating `resq` HTTP clients and issuing sync and async requests.
+**Domain.** Constructing the `resq` HTTP clients and issuing sync and async requests.
+This cell is the source of the two client flavors: `Requests` and `Session`.
 
-**Audience.** Anyone consuming the `resq` public API to perform HTTP calls.
+**Audience.** Anyone consuming the `resq` client API to perform HTTP calls.
 
 `resq` exposes two clients with the same verb surface:
 
@@ -10,15 +11,18 @@
   async `a*` verbs reuse a lazily-created, long-lived `httpx.AsyncClient` (one shared
   connection pool across all `a*` calls and `areload`); release it via `aclose` or
   `async with`.
-- `Session` — a persistent sync connection (`requests.Session`) and a long-lived
+- `Session` — a persistent sync connection (`requests.Session`) and the same long-lived
   async client; call `aclose` when done.
+
+Both flavors share one lazily-created, long-lived `httpx.AsyncClient` for the `a*` verbs
+and `areload`.
 
 ---
 
 ## Construction
 
-The constructor `timeout` is the **network** timeout (connect/read), set once. It is
-NOT the polling window.
+The constructor `timeout` is the **network** timeout (connect/read), set once on the
+engine. It is NOT the polling window.
 
 ```python
 from resq import Requests, Session
@@ -71,7 +75,13 @@ finally:
     await client.aclose()
 ```
 
-`aclose` is also invoked by `__aexit__`, so `async with` releases the client automatically.
+`aclose` is also invoked by `__aexit__`, so `async with` releases the client
+automatically:
+
+```python
+async with Requests("https://api.example.com", timeout=5) as client:
+    r = await client.aget("/health")
+```
 
 **Sync connection pool (`Session` only).** `aclose` and `async with` release the
 long-lived `httpx.AsyncClient` only. The `requests.Session` held by `Session` (its
@@ -88,3 +98,6 @@ deterministic sync-pool teardown in long-running processes if needed.
 - The constructor `timeout` is the network timeout; the method-level `timeout`
   (when passed) is the polling window. `delay` (default 1.0) sets the seconds
   between polling attempts and is ignored when the method `timeout` is not passed.
+- With the method `timeout` left at `None` (default), a verb issues a single request
+  and does not auto-raise on a non-2xx status — inspect `r.ok` or call
+  `r.raise_for_status()` yourself.

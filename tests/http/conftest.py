@@ -1,14 +1,27 @@
 """Shared fixtures and fakes for the resq.http cell tests.
 
 The resq.http business logic (response proxying, in-place reload, the polling
-loop) is tested mock-free against the two fakes defined here. `FakeUnderlying`
-stands in for the engine response (`requests.Response` / `httpx.Response`);
-`FakeOwner` stands in for the owning client (a `Requests` / `Session` exposing
-`_request` / `_arequest`). Neither touches the network.
+loop) is tested mock-free against the fakes/seams defined here.
+
+`FakeUnderlying` stands in for the engine response (`requests.Response` /
+`httpx.Response`).
+
+Architecture A (dependency injection): wrappers and the polling loop no longer
+hold a back-reference to the client. Instead the owning client injects a no-arg
+`reexec` (sync) / `arexec` (async coroutine function) callable that replays the
+stored recipe. Unit tests stand in for that callable with `make_reexec` /
+`make_arexec` (`unittest.mock.Mock` / `AsyncMock` with a FIFO `side_effect`
+queue of `FakeUnderlying` / exception instances — this gives `call_count` and
+raises queued exceptions naturally). `build_response` / `build_async_response`
+construct a pre-built wrapper the way the verb does (run the primary through the
+seam, then inject the underlying post-construction).
 """
+
+import unittest.mock
 
 import httpx
 import requests
+from resq.http.responses.responses import AsyncResponse, Response
 
 
 class FakeUnderlying:
@@ -75,44 +88,82 @@ class FakeUnderlying:
         raise error
 
 
-class FakeOwner:
-    """Stand-in client for polling/reload tests.
+def make_reexec(side_effect):
+    """Build a sync re-exec seam: a no-arg `Mock` with a FIFO `side_effect` queue.
 
-    Queues engine responses and hands them out FIFO via `_request` (sync) /
-    `_arequest` (async), recording each dispatched recipe. A queued item may be a
-    `FakeUnderlying` (returned), an exception instance (raised — for transport
-    failure tests), or a callable (called to produce the response).
+    Each call returns/raises the next queued item: a `FakeUnderlying` is
+    returned; an exception instance is raised. Exposes `call_count`.
 
     Args:
-        responses: queued items handed out in order on each dispatched call.
-        engine: engine label forwarded to fakes built for transport tests.
-        timeout: network timeout the real clients carry (cosmetic for tests).
+        side_effect: queued items handed out in order on each call.
+
+    Returns:
+        A `unittest.mock.Mock` standing in for the injected `reexec` callable.
     """
+    return unittest.mock.Mock(side_effect=list(side_effect))
 
-    def __init__(self, responses=None, engine="requests", timeout=None):
-        self._responses = list(responses) if responses else []
-        self.engine = engine
-        self.timeout = timeout
-        self.calls = []
 
-    def _next(self):
-        if not self._responses:
-            raise AssertionError("FakeOwner response queue exhausted")
+def make_arexec(side_effect):
+    """Build an async re-exec seam: an `AsyncMock` with a FIFO `side_effect` queue.
 
-        item = self._responses.pop(0)
-        if isinstance(item, BaseException):
-            raise item
+    Async mirror of :func:`make_reexec`: awaiting the returned coroutine
+    function yields/raises the next queued item.
 
-        return item() if callable(item) else item
+    Args:
+        side_effect: queued items handed out in order on each awaited call.
 
-    def _request(self, method, path, **kwargs):
-        """Synchronous dispatch — records the recipe and returns the next response."""
-        self.calls.append((method, path, kwargs))
+    Returns:
+        A `unittest.mock.AsyncMock` standing in for the injected `arexec`
+        coroutine function.
+    """
+    return unittest.mock.AsyncMock(side_effect=list(side_effect))
 
-        return self._next()
 
-    async def _arequest(self, method, path, **kwargs):
-        """Asynchronous dispatch — records the recipe and returns the next response."""
-        self.calls.append((method, path, kwargs))
+def build_response(side_effect, *, method="GET", path="/job/42", kwargs=None):
+    """Construct a pre-built sync `Response` the way the verb does.
 
-        return self._next()
+    Builds the `reexec` seam, constructs `Response(method, path, kwargs, reexec)`,
+    then runs the PRIMARY through `reexec()` (call 1) and injects the underlying
+    post-construction — exactly the Architecture-A verb recipe. Subsequent
+    `reload()` calls (e.g. from `poll`) advance the queue.
+
+    Args:
+        side_effect: queued items; the first is the primary underlying, later
+            items feed `reload()`.
+        method: the stored HTTP method.
+        path: the stored request path.
+        kwargs: the stored forwarded kwargs.
+
+    Returns:
+        A ``(response, reexec)`` pair (the seam exposes `call_count`).
+    """
+    recipe_kwargs = {} if kwargs is None else kwargs
+    reexec = make_reexec(side_effect)
+    resp = Response(method, path, recipe_kwargs, reexec)
+    resp._underlying = reexec()  # primary — mirrors the verb
+    return resp, reexec
+
+
+async def build_async_response(side_effect, *, method="GET", path="/job/42", kwargs=None):
+    """Construct a pre-built async `AsyncResponse` the way the verb does.
+
+    Async mirror of :func:`build_response`: builds the `arexec` seam, constructs
+    `AsyncResponse(method, path, kwargs, arexec)`, then awaits the PRIMARY
+    (`await arexec()`, call 1) and injects the underlying. Subsequent `areload()`
+    calls advance the queue.
+
+    Args:
+        side_effect: queued items; the first is the primary underlying, later
+            items feed `areload()`.
+        method: the stored HTTP method.
+        path: the stored request path.
+        kwargs: the stored forwarded kwargs.
+
+    Returns:
+        A ``(response, arexec)`` pair (the seam exposes `call_count`).
+    """
+    recipe_kwargs = {} if kwargs is None else kwargs
+    arexec = make_arexec(side_effect)
+    resp = AsyncResponse(method, path, recipe_kwargs, arexec)
+    resp._underlying = await arexec()  # primary — mirrors the verb
+    return resp, arexec

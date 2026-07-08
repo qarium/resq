@@ -8,19 +8,13 @@ Imports:
     From: resq/http
 
 Annotations: |
-  Facade cell — the public entry point of the resq package. Re-exports the
-  library API so consumers import from resq directly: `Requests` and `Session`
-  (the HTTP clients, sourced from resq/http). The embeddings below declare each
-  type as part of this cell's contract; the package __init__.py performs the
-  relative re-exports.
+  Facade cell — public entry point of the resq package. Adds no logic: only
+  re-exports `Requests` and `Session` (the HTTP clients from resq/http) via the
+  embeddings below; resq/__init__.py performs the relative re-exports.
 
-  This cell adds no logic of its own — it only re-exports. The response wrappers
-  (BaseResponse / Response / AsyncResponse) and the polling routines (poll /
-  apoll) remain reachable through resq/http for advanced typing needs.
-
-  Polling verbs never raise on window exhaustion: when the timeout window
-  elapses without a success status, the last (bad-status) response is returned,
-  so a held reference stays valid and reload/areload can retry it.
+  The response wrappers (BaseResponse / Response / AsyncResponse) and the polling
+  routines (poll / apoll) are NOT re-exported here — reach them through resq/http
+  when their types are needed directly.
 
   Use `convention` for the public surface and the relative-import re-export style.
 

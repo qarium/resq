@@ -1,17 +1,21 @@
 """Contract and logic tests for resq.http.responses.
 
 Contract tests verify the declared API (class hierarchy, properties, methods,
-factories, constructor signature). Logic tests exercise the proxy mapping and
-in-place reload semantics mock-free against `FakeUnderlying` / `FakeOwner`.
+constructor signature). Logic tests exercise the proxy mapping and in-place
+reload semantics against `FakeUnderlying` and the `reexec`/`arexec` injection
+seams (`build_response` / `build_async_response`), which mirror the
+Architecture-A verb recipe (run the primary through the seam, inject the
+underlying post-construction).
 """
 
 import inspect
+import unittest.mock
 
 import pytest
 import requests
-from resq.http.responses import AsyncResponse, BaseResponse, Response
+from resq.http.responses.responses import AsyncResponse, BaseResponse, Response
 
-from tests.http.conftest import FakeOwner, FakeUnderlying
+from tests.http.conftest import FakeUnderlying, build_async_response, build_response, make_reexec
 
 
 class TestResponseContract:
@@ -34,19 +38,20 @@ class TestResponseContract:
             assert hasattr(BaseResponse, name)
             assert callable(getattr(BaseResponse, name))
 
-    def test_response_declares_reload_and_from_request(self):
+    def test_response_declares_reload(self):
         assert callable(Response.reload)
-        assert isinstance(inspect.getattr_static(Response, "_from_request"), classmethod)
 
-    def test_async_response_declares_areload_and_from_arequest(self):
+    def test_async_response_declares_areload(self):
         assert inspect.iscoroutinefunction(AsyncResponse.areload)
-        descriptor = inspect.getattr_static(AsyncResponse, "_from_arequest")
-        assert isinstance(descriptor, classmethod)
-        assert inspect.iscoroutinefunction(descriptor.__func__)
 
     def test_base_response_constructor_signature_is_four_params(self):
         params = [name for name in inspect.signature(BaseResponse.__init__).parameters if name != "self"]
-        assert params == ["owner", "method", "path", "kwargs"]
+        assert params == ["method", "path", "kwargs", "reexec"]
+
+    def test_response_has_no_from_request_factory(self):
+        # Architecture A removes the _from_request / _from_arequest factories.
+        assert not hasattr(Response, "_from_request")
+        assert not hasattr(AsyncResponse, "_from_arequest")
 
 
 class TestResponseProxy:
@@ -54,8 +59,8 @@ class TestResponseProxy:
 
     def _wrap(self, status_code=200, **attrs):
         underlying = FakeUnderlying(status_code=status_code, **attrs)
-        owner = FakeOwner(responses=[underlying])
-        return Response._from_request(owner, "GET", "/x", {})
+        resp, _ = build_response([underlying], method="GET", path="/x")
+        return resp
 
     def test_status_code_forwarded(self):
         assert self._wrap(status_code=202).status_code == 202
@@ -83,22 +88,21 @@ class TestResponseProxy:
 class TestResponseBody:
     def test_json_returns_underlying_body_unchanged(self):
         body = {"a": 1, "b": [2, 3]}
-        owner = FakeOwner(responses=[FakeUnderlying(status_code=200, json_return=body)])
-        resp = Response._from_request(owner, "GET", "/data", {})
+        resp, _ = build_response(
+            [FakeUnderlying(status_code=200, json_return=body)],
+            method="GET",
+            path="/data",
+        )
 
         assert resp.json() == {"a": 1, "b": [2, 3]}
 
     def test_raise_for_status_delegates_to_underlying(self):
-        underlying = FakeUnderlying(status_code=500)
-        owner = FakeOwner(responses=[underlying])
-        resp = Response._from_request(owner, "GET", "/x", {})
+        resp, _ = build_response([FakeUnderlying(status_code=500)], method="GET", path="/x")
 
         with pytest.raises(requests.HTTPError):
             resp.raise_for_status()
 
-        good = FakeUnderlying(status_code=200)
-        owner2 = FakeOwner(responses=[good])
-        resp2 = Response._from_request(owner2, "GET", "/x", {})
+        resp2, _ = build_response([FakeUnderlying(status_code=200)], method="GET", path="/x")
 
         assert resp2.raise_for_status() is None
 
@@ -108,16 +112,14 @@ class TestResponseOkMapping:
         # status 304: requests `ok` is True (< 400), httpx `is_success` is False
         # (not 2xx) — the divergence proves `ok` maps to the sync engine source.
         underlying = FakeUnderlying(status_code=304)
-        owner = FakeOwner(responses=[underlying])
-        resp = Response._from_request(owner, "GET", "/x", {})
+        resp, _ = build_response([underlying], method="GET", path="/x")
 
         assert resp.ok is True
         assert resp.ok is underlying.ok
 
     async def test_async_response_ok_mirrors_underlying_is_success(self):
         underlying = FakeUnderlying(status_code=304, engine="httpx")
-        owner = FakeOwner(engine="httpx", responses=[underlying])
-        resp = await AsyncResponse._from_arequest(owner, "GET", "/x", {})
+        resp, _ = await build_async_response([underlying], method="GET", path="/x")
 
         assert resp.ok is False
         assert resp.ok is underlying.is_success
@@ -125,13 +127,14 @@ class TestResponseOkMapping:
 
 class TestResponseReload:
     def test_reload_replaces_underlying_in_place(self):
-        owner = FakeOwner(
-            responses=[
+        resp, reexec = build_response(
+            [
                 FakeUnderlying(status_code=200),
                 FakeUnderlying(status_code=201),
-            ]
+            ],
+            method="GET",
+            path="/job/42",
         )
-        resp = Response._from_request(owner, "GET", "/job/42", {})
 
         assert resp.status_code == 200
 
@@ -140,25 +143,34 @@ class TestResponseReload:
 
         assert captured_ref is resp
         assert resp.status_code == 201
+        # primary (injected by build_response) + reload both replayed via reexec.
+        assert reexec.call_count == 2
 
-    def test_from_request_stores_recipe_and_dispatches_once(self):
-        owner = FakeOwner(responses=[FakeUnderlying(status_code=200)])
-        resp = Response._from_request(owner, "POST", "/items", {"q": "1"})
+    def test_reload_stores_recipe_on_construction(self):
+        # Architecture A: the recipe lives on the wrapper (no owner, no factory).
+        kwargs = {"q": "1"}
+        resp, reexec = build_response(
+            [FakeUnderlying(status_code=200)],
+            method="POST",
+            path="/items",
+            kwargs=kwargs,
+        )
 
         assert resp._method == "POST"
         assert resp._path == "/items"
-        assert resp._kwargs == {"q": "1"}
-        assert owner.calls == [("POST", "/items", {"q": "1"})]
+        assert resp._kwargs is kwargs
+        assert resp._reexec is reexec  # the injected re-execute seam
+        assert reexec.call_count == 1  # primary dispatched once
 
     async def test_areload_replaces_underlying_in_place(self):
-        owner = FakeOwner(
-            engine="httpx",
-            responses=[
+        resp, arexec = await build_async_response(
+            [
                 FakeUnderlying(status_code=200, engine="httpx"),
                 FakeUnderlying(status_code=201, engine="httpx"),
             ],
+            method="GET",
+            path="/job/42",
         )
-        resp = await AsyncResponse._from_arequest(owner, "GET", "/job/42", {})
 
         assert resp.status_code == 200
 
@@ -167,16 +179,17 @@ class TestResponseReload:
 
         assert captured_ref is resp
         assert resp.status_code == 201
+        assert arexec.call_count == 2  # primary + areload both replayed via arexec.
 
 
 class TestBaseResponseInternals:
     def test_underlying_is_none_until_injected(self):
-        resp = BaseResponse(owner=None, method="GET", path="/x", kwargs={})
+        resp = BaseResponse("GET", "/x", {}, make_reexec([]))
 
         assert resp._underlying is None
 
     def test_base_ok_is_abstract(self):
-        base = BaseResponse(owner=None, method="GET", path="/x", kwargs={})
+        base = BaseResponse("GET", "/x", {}, unittest.mock.Mock())
 
         with pytest.raises(NotImplementedError, match="ok"):
             _ = base.ok

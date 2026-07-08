@@ -10,9 +10,15 @@ set once on the engine). The per-verb ``timeout`` is the POLLING window — when
 ``None`` the verb issues a single request with no status check (plain engine
 behavior) and ``delay`` is ignored. Same name, different meaning by position.
 
-Internal dispatch contract: the verbs, ``poll``/``apoll`` and ``reload``/``areload``
-all route through the private ``_request`` (sync) / ``_arequest`` (async) — they
-never call ``requests``/``httpx`` directly.
+Dependency-inversion dispatch: each verb builds a no-arg ``reexec`` (sync) /
+``arexec`` (async coroutine function) closure that replays the recipe through the
+private ``_request`` / ``_arequest`` engine hooks (the closures bake in the
+network timeout). The verb runs the PRIMARY through that closure, constructs the
+wrapper with the closure, and injects the primary underlying post-construction;
+it then returns the wrapper (``timeout is None``) or delegates to
+``poll``/``apoll``. ``reload``/``areload`` on the wrapper replay the recipe
+through the same closure — so neither the wrapper nor ``poll``/``apoll`` holds a
+back-reference to the client.
 """
 
 from __future__ import annotations
@@ -23,8 +29,8 @@ from urllib.parse import urljoin
 import httpx
 import requests
 
-from .polling import apoll, poll
-from .responses import AsyncResponse, Response
+from ..polling import apoll, poll
+from ..responses import AsyncResponse, Response
 
 
 def _normalize_path(path: str) -> str:
@@ -58,15 +64,19 @@ def _join_url(base_url: str, path: str) -> str:
     return urljoin(base, _normalize_path(path))
 
 
-class _Client:
+class Client:
     """Shared state and behavior for the sync/async HTTP client flavors.
 
-    Both ``Requests`` and ``Session`` store the base URL, the network timeout, and a
-    lazily-created long-lived ``httpx`` ``AsyncClient``. They differ only in the sync
-    dispatch (``_request``): ``Requests`` opens a fresh connection per call, while
-    ``Session`` reuses a persistent ``requests.Session``. The async dispatch, the lazy
-    async client, the verbs, ``aclose`` and the async-context-manager lifecycle are
-    identical and therefore live here.
+    Both ``Requests`` and ``Session`` mutate from this base: they store the base URL,
+    the network timeout, and a lazily-created long-lived ``httpx`` ``AsyncClient``.
+    They differ only in the sync dispatch (``_request``): ``Requests`` opens a fresh
+    connection per call, while ``Session`` reuses a persistent ``requests.Session``.
+    The async dispatch, the lazy async client, the verbs, ``aclose`` and the
+    async-context-manager lifecycle are identical and therefore live here.
+
+    ``Client`` is the contract base of the two-flavor model — it is not part of the
+    cell facade (not re-exported via ``__all__``); consumers construct ``Requests`` or
+    ``Session`` directly.
 
     Args:
         base_url: the base URL prefixing every request path.
@@ -119,16 +129,41 @@ class _Client:
         return self._async_client
 
     def _verb(self, method, path, timeout, delay, kwargs):
-        """Dispatch a sync verb: a single request when no polling window, else poll."""
+        """Dispatch a sync verb (Architecture A): build ``reexec``, run the primary, return or poll.
+
+        Builds the no-arg ``reexec`` closure replaying the recipe through the sync
+        engine (the single source of every underlying), runs the PRIMARY through
+        it, constructs the wrapper with the closure and injects the primary
+        underlying, then returns the wrapper (``timeout is None``) or delegates to
+        :func:`poll`.
+        """
+
+        def reexec():
+            return self._request(method, path, **kwargs)
+
+        resp = Response(method, path, kwargs, reexec)
+        resp._underlying = reexec()  # primary
         if timeout is None:
-            return Response._from_request(self, method, path, kwargs)
-        return poll(self, method, path, kwargs, timeout, delay)
+            return resp
+        return poll(resp, timeout, delay)
 
     async def _averb(self, method, path, timeout, delay, kwargs):
-        """Dispatch an async verb: a single request when no polling window, else apoll."""
+        """Dispatch an async verb (Architecture A): build ``arexec``, run the primary, return or apoll.
+
+        Async mirror of :meth:`_verb` through the lazy ``AsyncClient``: builds the
+        no-arg ``arexec`` coroutine function, awaits the PRIMARY, constructs the
+        wrapper with the closure and injects the primary underlying, then returns
+        the wrapper (``timeout is None``) or delegates to :func:`apoll`.
+        """
+
+        async def arexec():
+            return await self._arequest(method, path, **kwargs)
+
+        resp = AsyncResponse(method, path, kwargs, arexec)
+        resp._underlying = await arexec()  # primary
         if timeout is None:
-            return await AsyncResponse._from_arequest(self, method, path, kwargs)
-        return await apoll(self, method, path, kwargs, timeout, delay)
+            return resp
+        return await apoll(resp, timeout, delay)
 
     def get(self, path, timeout=None, delay=1.0, **kwargs):
         """Issue a ``GET``; a single request when ``timeout`` is None, else poll."""
@@ -198,14 +233,14 @@ class _Client:
             await self._async_client.aclose()
             self._async_client = None
 
-    async def __aenter__(self) -> _Client:
+    async def __aenter__(self) -> Client:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
 
 
-class Requests(_Client):
+class Requests(Client):
     """Sync-flavor client: a fresh ``requests`` connection per sync call.
 
     Each sync verb opens a brand-new connection via module-level ``requests.request``.
@@ -216,13 +251,16 @@ class Requests(_Client):
         timeout: the NETWORK timeout (connect/read) applied to every sync request.
     """
 
+    def __init__(self, base_url: str, timeout: float | None = None) -> None:
+        super().__init__(base_url, timeout)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         """Execute a sync request via module-level ``requests.request`` (fresh connection)."""
         url = _join_url(self._base_url, path)
         return requests.request(method, url, timeout=self._timeout, **kwargs)
 
 
-class Session(_Client):
+class Session(Client):
     """Persistent-flavor client: one held ``requests.Session`` reused across sync calls.
 
     Sync verbs route through the held ``requests.Session`` (persistent pool/cookies).
