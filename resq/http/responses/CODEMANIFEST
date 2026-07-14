@@ -1,0 +1,127 @@
+Usages:
+  convention: .goga/usages/conventions.md
+  requests: .goga/usages/cooks/requests.md
+  httpx: .goga/usages/cooks/httpx.md
+
+Annotations: |
+  Use `convention` for code style, Google-style docstrings, relative imports,
+  the mirrored test structure, and Python 3.10+ typing (typing.Optional per
+  UP045). pydantic is NOT used in this cell.
+
+  LEAF CELL — no Imports. Response wrappers hold no reference to any client type.
+  The owning client injects a re-execute source at construction so reload/areload
+  can replay the stored recipe; the wrappers never import the clients package.
+
+  Two engines share one unified attribute surface: sync `Response` over a
+  `requests` response, async `AsyncResponse` over an `httpx` response. End users
+  never construct a wrapper themselves — they receive one from a client verb.
+
+---
+
+"BaseResponse(method: str, path: str, kwargs: .., reexec: Callable)":
+  location: responses.py
+  annotations: |
+    Common ancestor of the sync and async wrappers. Stores the request recipe and
+    defines the unified attribute-proxy contract both engines implement.
+
+    `method`: HTTP verb of the original request.
+    `path`: request path (the owning client joins it onto its base_url).
+    `kwargs`: forwarded engine keyword arguments, stored verbatim for replay.
+    `reexec`: no-arg re-execute source injected by the owning client; invoking it
+      (sync) / awaiting it (async) replays the stored recipe through the client's
+      engine with the client's network timeout and returns a fresh underlying
+      response. Kept for reload/areload so the wrapper never references a client
+      type.
+
+    Requirements:
+    - Store the recipe and `reexec` so subclasses can replay the request.
+    - Expose the underlying response through the explicit properties below
+      (unified names), mapping the engine-specific success flag (`requests` ok /
+      `httpx` is_success).
+
+    Constraints:
+    - Proxy through the explicit declared properties only — no dynamic attribute
+      fallback.
+    - Do not re-execute at this level; subclasses own reload/areload.
+  properties:
+    "status_code -> int": |
+      HTTP status code of the underlying response.
+    "ok -> bool": |
+      True for a success status (maps to `requests` ok / `httpx` is_success).
+    "text -> str": |
+      Decoded body of the underlying response.
+    "content -> bytes": |
+      Raw body bytes of the underlying response.
+    "headers -> dict[str, str]": |
+      Response headers (case-insensitive in the underlying engine).
+    "url -> str": |
+      Final URL after redirects.
+    "encoding -> str | None": |
+      Body encoding, or None when absent.
+  methods:
+    "json() -> body:..": |
+      Parsed JSON body of the underlying response — a heterogeneous runtime
+      value, returned verbatim with no coercion.
+    "raise_for_status()": |
+      Delegate to the underlying raise_for_status (raises the engine HTTP error
+      on 4xx/5xx).
+
+"BaseResponse::Response(method: str, path: str, kwargs: .., reexec: Callable)":
+  location: responses.py
+  annotations: |
+    Sync wrapper over a requests.Response. Inherits the proxy contract from
+    `BaseResponse`; adds in-place reload driven by the injected re-execute source.
+
+    Requirements:
+    - The wrapped underlying is a requests.Response.
+  methods:
+    "reload()": |
+      Re-execute the original request via the injected re-execute source and
+      replace the wrapped requests.Response in place, preserving object identity.
+
+      Algorithm:
+      1. Invoke the injected re-execute source (captured at construction), which
+         replays the stored recipe through the owning client's sync engine with
+         the client's network timeout, producing a new underlying response.
+      2. Replace the wrapped underlying on this same object.
+
+      Requirements:
+      - Preserve object identity — all existing references observe the update.
+      - The network timeout comes from the owning client (captured in the source).
+
+      Constraints:
+      - Do not construct a new `Response`; mutate the existing one.
+
+"BaseResponse::AsyncResponse(method: str, path: str, kwargs: .., reexec: Callable)":
+  location: responses.py
+  annotations: |
+    Async wrapper over an httpx.Response. Inherits the proxy contract from
+    `BaseResponse`; adds in-place areload driven by the injected async re-execute
+    source.
+
+    Requirements:
+    - The wrapped underlying is an httpx.Response.
+  methods:
+    "areload()": |
+      Re-await the original request via the injected async re-execute source and
+      replace the wrapped httpx.Response in place, preserving object identity.
+
+      Algorithm:
+      1. Await the injected async re-execute source (captured at construction),
+         which replays the stored recipe against the owning client's long-lived
+         AsyncClient with the client's network timeout.
+      2. Replace the wrapped underlying on this same object.
+
+      Requirements:
+      - Preserve object identity — all existing references observe the update.
+      - Reuse the same AsyncClient that produced the original response (captured
+        in the source).
+
+      Constraints:
+      - Do not construct a new `AsyncResponse`; mutate the existing one.
+
+---
+
+Author: Goga
+CreatedAt: 08/07/26
+Description: Листовая клетка-обёртки ответов (BaseResponse/Response/AsyncResponse) с in-place reload/areload. Не имеет Imports — переисполнение инжектируется клиентом (dependency inversion), что разрывает цикл импортов.

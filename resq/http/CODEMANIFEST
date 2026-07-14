@@ -1,0 +1,32 @@
+Usages:
+  convention: .goga/usages/conventions.md
+
+Imports:
+  - Types:
+      - Requests
+      - Session
+    From: resq/http/clients
+  - Types:
+      - Response
+      - AsyncResponse
+    From: resq/http/responses
+
+Annotations: |
+  Use `convention` for the public surface and the relative-import re-export style.
+
+  Aggregation cell — declares no types of its own. Re-exports the public surface
+  from the child cells — `Requests` and `Session` from clients, `Response` and
+  `AsyncResponse` from responses
+
+---
+
+->Requests: {}
+->Session: {}
+->Response: {}
+->AsyncResponse: {}
+
+---
+
+Author: Goga
+CreatedAt: 09/07/26
+Description: Клетка-агрегатор resq.http — реэкспорт публичной поверхности из дочерних клеток clients/polling/responses. Не объявляет собственных типов.

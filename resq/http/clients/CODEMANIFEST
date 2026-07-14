@@ -1,0 +1,183 @@
+Usages:
+  convention: .goga/usages/conventions.md
+  requests: .goga/usages/cooks/requests.md
+  httpx: .goga/usages/cooks/httpx.md
+
+Imports:
+  - Types:
+      - Response
+      - AsyncResponse
+    From: resq/http/responses
+  - Types:
+      - poll
+      - apoll
+    From: resq/http/polling
+
+Annotations: |
+  Use `convention` for code style, Google-style docstrings, relative imports,
+  the mirrored test structure, and Python 3.10+ typing (typing.Optional per
+  UP045). pydantic is NOT used in this cell.
+
+  Two client flavors (`Requests` / `Session`) mutate from a shared `Client` base:
+  sync verbs on `requests` (`Requests` opens a fresh connection per call, `Session`
+  reuses one requests.Session); the async a* verbs share a lazily-created,
+  long-lived httpx.AsyncClient. The common verbs, the lazy async client lifecycle,
+  aclose, and the async-context-manager protocol live on `Client`; each flavor only
+  overrides the sync _request dispatch — all public verbs and properties are
+  declared directly on `Client` (the extractor does not follow inheritance).
+
+  Two distinct timeouts: the constructor timeout is the NETWORK timeout
+  (connect/read, set once on the engine); the per-verb timeout is the POLLING
+  window. Each verb builds its response wrapper on `Client` and injects a re-execute
+  source, so the wrapper can reload/areload without referencing this cell
+  (dependency inversion).
+
+---
+
+"Client(base_url: str, timeout: float | None = None)":
+  location: clients.py
+  annotations: |
+    Shared base and contract root of the two-flavor client model — owns the base
+    URL, the network timeout, the lazily-created long-lived httpx.AsyncClient, every
+    sync/async verb, aclose, and the async-context-manager protocol. The two flavors
+    (`Requests`, `Session`) mutate from it and differ only in the sync _request
+    dispatch.
+
+    `Client` is NOT part of the cell facade — it is not re-exported via __all__;
+    consumers construct `Requests` or `Session`. It is public only so the shared
+    verbs and properties are declared where the extractor reads them.
+
+    `base_url`: origin prefixed to every request path.
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the `requests`
+    timeout and an `httpx` Timeout. None leaves the engine at its default.
+
+    Requirements:
+    - Support the async-with lifecycle; release the AsyncClient via aclose (or
+      async with) when done.
+
+    Use `requests` for sync execution and `httpx` for async execution.
+  properties:
+    "base_url -> str": |
+      Configured request origin.
+    "timeout -> float | None": |
+      Configured network timeout.
+  methods:
+    "get(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Sync GET request against base_url.
+
+      `path`: request path, normalized and joined onto base_url.
+      `kwargs`: forwarded verbatim to the `requests` call.
+      `timeout`: POLLING window (None = single request, no auto raise_for_status).
+      `delay`: seconds between polling attempts (default 1.0).
+      `response`: the `Response`.
+
+      Algorithm:
+      1. Execute one GET through the sync _request dispatch (network timeout = the
+         constructor timeout; path normalized and joined), wrap it in a `Response`,
+         and inject a re-execute source for reload.
+      2. If `timeout` is None, return the `Response` without auto raise_for_status.
+      3. Otherwise delegate to `poll` with the `Response` and the polling window.
+
+      Requirements:
+      - The network timeout is the constructor timeout, not the method timeout.
+      - Forward `kwargs` verbatim.
+
+      Use `requests` for execution.
+    "post(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing a POST. Use `requests`.
+    "put(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing a PUT. Use `requests`.
+    "delete(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing a DELETE. Use `requests`.
+    "patch(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing a PATCH. Use `requests`.
+    "head(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing a HEAD. Use `requests`.
+    "options(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
+      Same as get, issuing an OPTIONS. Use `requests`.
+    "aget(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Async GET request against base_url via the long-lived httpx.AsyncClient.
+
+      `path`: request path, normalized and joined onto base_url.
+      `kwargs`: forwarded verbatim to the `httpx` call.
+      `timeout`: POLLING window (None = single request, no auto raise_for_status).
+      `delay`: seconds between polling attempts (default 1.0).
+      `response`: the `AsyncResponse`.
+
+      Algorithm:
+      1. Execute one GET through the long-lived async client (network timeout =
+         the constructor timeout), wrap it in an `AsyncResponse`, and inject an
+         async re-execute source for areload.
+      2. If `timeout` is None, return the `AsyncResponse` without auto
+         raise_for_status.
+      3. Otherwise delegate to `apoll` with the `AsyncResponse` and the polling
+         window.
+
+      Requirements:
+      - Reuse the long-lived AsyncClient (created lazily on the first a* call).
+      - The network timeout is the constructor timeout.
+
+      Use `httpx` for execution.
+    "apost(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing a POST. Use `httpx`.
+    "aput(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing a PUT. Use `httpx`.
+    "adelete(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing a DELETE. Use `httpx`.
+    "apatch(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing a PATCH. Use `httpx`.
+    "ahead(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing a HEAD. Use `httpx`.
+    "aoptions(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
+      Same as aget, issuing an OPTIONS. Use `httpx`.
+    "aclose()": |
+      Close the long-lived `httpx` AsyncClient and release its resources.
+
+      Requirements:
+      - Idempotent; safe to call after closing.
+      - No-op when no a* call has created the client yet (lazy creation).
+      - Closes only the AsyncClient; the held requests.Session (on `Session`) is NOT
+        closed — it relies on garbage collection.
+      - Also invoked by __aexit__ (async-with).
+
+"Client::Requests(base_url: str, timeout: float | None = None)":
+  location: clients.py
+  annotations: |
+    Sync-flavor HTTP client — the `Requests` flavor of the two-flavor model
+    (see global annotations). Inherits every public verb, property, aclose, and the
+    async-context-manager protocol from `Client`; overrides only the sync _request
+    dispatch to open a fresh `requests` connection per sync call.
+
+    `base_url`: origin prefixed to every request path.
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the `requests`
+    timeout and an `httpx` Timeout.
+
+    Requirements:
+    - Support the async-with lifecycle; release the AsyncClient via aclose (or
+      async with) when done.
+
+    Use `requests` for sync execution and `httpx` for async execution.
+
+"Client::Session(base_url: str, timeout: float | None = None)":
+  location: clients.py
+  annotations: |
+    Persistent-flavor HTTP client — the `Session` flavor of the two-flavor model
+    (see global annotations). Inherits every public verb, property, aclose, and the
+    async-context-manager protocol from `Client`; holds one `requests` Session across
+    sync verbs and overrides only the sync _request dispatch to route through it.
+
+    `base_url`: origin prefixed to every request path.
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the held
+    requests.Session timeout and an `httpx` Timeout.
+
+    Requirements:
+    - Support the async-with lifecycle; release the AsyncClient via aclose (or
+      async with) when done.
+
+    Use `requests` for sync execution and `httpx` for async execution.
+
+---
+
+Author: Goga
+CreatedAt: 08/07/26
+Description: Клетка HTTP-клиентов (Requests/Session как мутации общего Client) — sync на requests, async a* на долгоживущем httpx.AsyncClient. Строит обёртки с инжектируемым источником переисполнения и делегирует опрос в polling. Зависит от responses и polling (DAG).
