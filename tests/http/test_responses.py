@@ -40,9 +40,13 @@ class TestResponseContract:
 
     def test_response_declares_reload(self):
         assert callable(Response.reload)
+        assert not inspect.iscoroutinefunction(Response.reload)
 
-    def test_async_response_declares_areload(self):
-        assert inspect.iscoroutinefunction(AsyncResponse.areload)
+    def test_async_response_declares_reload(self):
+        assert inspect.iscoroutinefunction(AsyncResponse.reload)
+
+    def test_async_response_has_no_areload(self):
+        assert not hasattr(AsyncResponse, "areload")
 
     def test_base_response_constructor_signature_is_four_params(self):
         params = [name for name in inspect.signature(BaseResponse.__init__).parameters if name != "self"]
@@ -162,7 +166,7 @@ class TestResponseReload:
         assert resp._reexec is reexec  # the injected re-execute seam
         assert reexec.call_count == 1  # primary dispatched once
 
-    async def test_areload_replaces_underlying_in_place(self):
+    async def test_async_reload_replaces_underlying_in_place(self):
         resp, arexec = await build_async_response(
             [
                 FakeUnderlying(status_code=200, engine="httpx"),
@@ -175,11 +179,11 @@ class TestResponseReload:
         assert resp.status_code == 200
 
         captured_ref = resp
-        await resp.areload()
+        await resp.reload()
 
         assert captured_ref is resp
         assert resp.status_code == 201
-        assert arexec.call_count == 2  # primary + areload both replayed via arexec.
+        assert arexec.call_count == 2  # primary + reload both replayed via arexec.
 
 
 class TestBaseResponseInternals:

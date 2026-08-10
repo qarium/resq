@@ -2,14 +2,15 @@
 
 Defines the unified attribute-proxy contract (``BaseResponse``) and its sync
 (``Response`` over ``requests``) / async (``AsyncResponse`` over ``httpx``)
-subclasses with in-place ``reload`` / ``areload``.
+subclasses with in-place ``reload`` (sync ``def`` on ``Response``, awaited on
+``AsyncResponse`` — one name, dispatched by plain method override).
 
 Architecture A (dependency inversion): the wrapper stores the request recipe
 (``method``, ``path``, ``kwargs``) plus a no-arg ``reexec`` callable injected by
-the owning client. ``reload`` / ``areload`` replay the recipe through that
-callable — the wrapper holds NO back-reference to the client object. The wrapped
-engine response (``_underlying``) is NOT a constructor parameter; the owning
-client runs the primary request and injects the underlying post-construction.
+the owning client. ``reload`` replays the recipe through that callable — the
+wrapper holds NO back-reference to the client object. The wrapped engine response
+(``_underlying``) is NOT a constructor parameter; the owning client runs the
+primary request and injects the underlying post-construction.
 Proxying is explicit (one declared property per attribute) — no ``__getattr__``
 fallback.
 """
@@ -36,7 +37,7 @@ class BaseResponse:
     network timeout and returns a fresh underlying response. It is the single
     source of every underlying — primary and reload. The base does NOT reference
     any client type and does NOT re-execute at this level (subclasses own
-    ``reload`` / ``areload``).
+    ``reload``).
 
     The ``ok`` property is engine-specific (``requests`` exposes ``ok``,
     ``httpx`` only has ``is_success``), so it is declared abstract here and
@@ -160,7 +161,7 @@ class AsyncResponse(BaseResponse):
         """bool: ``self._underlying.is_success`` (200..299)."""
         return self._underlying.is_success
 
-    async def areload(self) -> None:
+    async def reload(self) -> None:
         """Re-await the stored recipe through the injected source in place.
 
         Replaces ``_underlying`` on the SAME object so every existing reference
