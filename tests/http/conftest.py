@@ -149,12 +149,12 @@ async def build_async_response(side_effect, *, method="GET", path="/job/42", kwa
 
     Async mirror of :func:`build_response`: builds the `arexec` seam, constructs
     `AsyncResponse(method, path, kwargs, arexec)`, then awaits the PRIMARY
-    (`await arexec()`, call 1) and injects the underlying. Subsequent `areload()`
-    calls advance the queue.
+    (`await arexec()`, call 1) and injects the underlying. Subsequent `reload()`
+    calls (the unified name — awaited on `AsyncResponse`) advance the queue.
 
     Args:
         side_effect: queued items; the first is the primary underlying, later
-            items feed `areload()`.
+            items feed `reload()`.
         method: the stored HTTP method.
         path: the stored request path.
         kwargs: the stored forwarded kwargs.
