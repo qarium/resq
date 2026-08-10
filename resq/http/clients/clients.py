@@ -29,7 +29,7 @@ from urllib.parse import urljoin
 import httpx
 import requests
 
-from ..polling import apoll, poll
+from ..polling import poll
 from ..responses import AsyncResponse, Response
 
 
@@ -163,7 +163,7 @@ class Client:
         resp._underlying = await arexec()  # primary
         if timeout is None:
             return resp
-        return await apoll(resp, timeout, delay)
+        return await poll(resp, timeout, delay)
 
     def get(self, path, timeout=None, delay=1.0, **kwargs):
         """Issue a ``GET``; a single request when ``timeout`` is None, else poll."""
