@@ -1,19 +1,32 @@
-"""Contract and logic tests for resq.http.clients.
+"""Contract and logic tests for resq.http.clients (adapter model).
 
-Contract tests verify the declared API (constructors, properties, the sync/async
-verb surface, ``aclose`` / ``__aenter__`` / ``__aexit__``, and the internal dispatch
-``_request`` / ``_arequest`` / ``_get_async_client``) and the module helpers. Logic
-tests mock only at the engine boundary (``requests.request``,
-``requests.Session``, ``httpx.AsyncClient``) — the business logic runs mock-free
-against the boundary fakes, per the convention usage.
+Contract tests verify the declared API of the adapter-model client: the
+``(base_url, adapter, timeout=None)`` constructor, the ``base_url`` /
+``adapter`` / ``timeout`` properties, exactly seven unified dual-mode verbs
+(``get``/``post``/``put``/``delete``/``patch``/``head``/``options`` — all plain
+``def``, no ``a*`` variants), a unified ``close`` (no public ``aclose``), and
+BOTH context-manager protocols (sync ``with`` + async ``async with``).
+
+Logic tests mock only at the engine boundary and use the patch-then-construct
+discipline: the engine callable is captured by the adapter ONCE at construction,
+so the patch must be in place before the client is built. The sync boundary is
+``resq.http.clients.clients.requests.request`` /
+``resq.http.clients.clients.requests.Session``; the async boundary is
+``resq.http.adapters.adapters.httpx.AsyncClient`` (the client no longer imports
+``httpx``).
 """
+
+from __future__ import annotations
 
 import inspect
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import httpx
+import pytest
 from resq.http.clients import Requests, Session
 from resq.http.clients.clients import _join_url, _normalize_path
+from resq.http.polling import polling as polling_module
 from resq.http.responses.responses import AsyncResponse, Response
 
 from tests.http.conftest import FakeUnderlying
@@ -21,57 +34,65 @@ from tests.http.conftest import FakeUnderlying
 SYNC_VERBS = ["get", "post", "put", "delete", "patch", "head", "options"]
 ASYNC_VERBS = ["aget", "apost", "aput", "adelete", "apatch", "ahead", "aoptions"]
 
+BASE_URL = "https://api.example.com"
+
 
 class TestClientContract:
-    def test_clients_are_importable_and_constructible(self):
+    def test_clients_are_importable_and_constructible_with_adapter(self):
         for cls in (Requests, Session):
-            client = cls("https://api.example.com", timeout=5)
-            assert client is not None
-            # default timeout=None flavor
-            assert cls("https://api.example.com") is not None
+            for adapter in ("requests", "httpx"):
+                assert cls(BASE_URL, adapter=adapter, timeout=5) is not None
+                # default timeout=None flavor
+                assert cls(BASE_URL, adapter) is not None
 
-    def test_clients_expose_base_url_and_timeout_properties(self):
+    def test_clients_expose_base_url_adapter_timeout_properties(self):
         for cls in (Requests, Session):
-            assert isinstance(inspect.getattr_static(cls, "base_url"), property)
-            assert isinstance(inspect.getattr_static(cls, "timeout"), property)
-            client = cls("https://api.example.com", timeout=5)
-            assert client.base_url == "https://api.example.com"
-            assert client.timeout == 5
-            assert cls("https://api.example.com").timeout is None
+            for name in ("base_url", "adapter", "timeout"):
+                assert isinstance(inspect.getattr_static(cls, name), property), (
+                    f"{name!r} must be a property on {cls.__name__}"
+                )
 
-    def test_sync_verbs_exist_on_both_clients(self):
+        for cls in (Requests, Session):
+            sync_client = cls(BASE_URL, adapter="requests", timeout=5)
+            assert sync_client.base_url == BASE_URL
+            assert sync_client.adapter == "requests"
+            assert sync_client.timeout == 5
+
+            async_client = cls(BASE_URL, adapter="httpx")
+            assert async_client.adapter == "httpx"
+            assert async_client.timeout is None
+
+    def test_unified_verbs_exist_and_are_plain_def(self):
         for cls in (Requests, Session):
             for verb in SYNC_VERBS:
                 method = getattr(cls, verb)
                 assert callable(method)
-                assert not inspect.iscoroutinefunction(method)
+                assert not inspect.iscoroutinefunction(method), f"{verb} must be a plain def"
 
-    def test_async_verbs_exist_and_are_coroutines(self):
+    def test_no_async_a_verbs(self):
         for cls in (Requests, Session):
             for verb in ASYNC_VERBS:
-                method = getattr(cls, verb)
-                assert callable(method)
-                assert inspect.iscoroutinefunction(method)
+                assert not hasattr(cls, verb), f"{cls.__name__} must not expose {verb}"
 
-    def test_async_lifecycle_methods_exist(self):
+    def test_close_exists_and_is_plain_def(self):
         for cls in (Requests, Session):
-            assert inspect.iscoroutinefunction(cls.aclose)
-            assert hasattr(cls, "__aenter__")
-            assert hasattr(cls, "__aexit__")
+            assert callable(cls.close)
+            assert not inspect.iscoroutinefunction(cls.close)
 
-    def test_internal_dispatch_present_on_both_clients(self):
+    def test_no_public_aclose(self):
         for cls in (Requests, Session):
-            assert callable(cls._request)
-            assert callable(cls._arequest)
-            assert callable(cls._get_async_client)
-            # _arequest and aclose are coroutine functions
-            assert inspect.iscoroutinefunction(cls._arequest)
+            assert not hasattr(cls, "aclose")
+
+    def test_both_context_managers_present(self):
+        for cls in (Requests, Session):
+            for dunder in ("__enter__", "__exit__", "__aenter__", "__aexit__"):
+                assert hasattr(cls, dunder), f"{cls.__name__} missing {dunder}"
+            assert inspect.iscoroutinefunction(cls.__aenter__)
+            assert inspect.iscoroutinefunction(cls.__aexit__)
 
     def test_verb_signatures_accept_path_timeout_delay_and_arbitrary_kwargs(self):
-        # The verbs use the ergonomic **kwargs approximation (not a named `kwargs`
-        # param): assert path/timeout/delay exist plus VAR_KEYWORD forwarding.
         for cls in (Requests, Session):
-            for verb in SYNC_VERBS + ASYNC_VERBS:
+            for verb in SYNC_VERBS:
                 params = inspect.signature(getattr(cls, verb)).parameters
                 assert "path" in params, f"{verb} missing `path`"
                 assert "timeout" in params, f"{verb} missing `timeout`"
@@ -88,102 +109,174 @@ class TestHelpers:
         assert _normalize_path("//double") == "double"
 
     def test_join_url_ensures_trailing_slash_on_base(self):
-        assert _join_url("https://api.example.com", "/health") == "https://api.example.com/health"
-        assert _join_url("https://api.example.com/", "/health") == "https://api.example.com/health"
+        assert _join_url(BASE_URL, "/health") == "https://api.example.com/health"
+        assert _join_url(f"{BASE_URL}/", "/health") == "https://api.example.com/health"
 
-    def test_join_url_parity_with_httpx_base_url(self):
-        # httpx joins base_url + normalized path; the sync join must match.
-        assert _join_url("https://api.example.com/v1", "/users/42") == "https://api.example.com/v1/users/42"
+    def test_join_url_parity_with_full_url(self):
+        assert _join_url(f"{BASE_URL}/v1", "/users/42") == "https://api.example.com/v1/users/42"
 
 
-class TestRequests:
-    def test_get_returns_response_without_raise_when_timeout_none(self):
+class TestAdapterSelection:
+    def test_adapter_arg_selects_requests_mode_sync(self):
         with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
-            mock_request.return_value = FakeUnderlying(status_code=500)
-            client = Requests("https://api.example.com", timeout=5)
+            mock_request.return_value = FakeUnderlying(status_code=200)
+            client = Requests(BASE_URL, adapter="requests", timeout=5)
             resp = client.get("/health")
 
         assert isinstance(resp, Response)
-        assert resp.status_code == 500  # bad status NOT raised (single-request path)
+        assert resp.status_code == 200
         mock_request.assert_called_once_with("GET", "https://api.example.com/health", timeout=5)
+        assert client.adapter == "requests"
 
-    async def test_aget_uses_long_lived_async_client(self):
-        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
+    async def test_adapter_arg_selects_httpx_mode_async(self):
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
-            mock_client.request = AsyncMock(
-                return_value=FakeUnderlying(status_code=200, engine="httpx"),
-            )
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
             mock_client.aclose = AsyncMock()
 
-            client = Requests("https://api.example.com")
-            resp_a = await client.aget("/a")
-            resp_b = await client.aget("/b")
+            client = Requests(BASE_URL, adapter="httpx", timeout=5)
+            resp = await client.get("/health")
 
-            assert isinstance(resp_a, AsyncResponse)
-            assert resp_b.status_code == 200
-            assert mock_client_cls.call_count == 1  # lazily created once, then reused
+        assert isinstance(resp, AsyncResponse)
+        assert resp.status_code == 200
+        assert mock_client_cls.call_count == 1  # lazily created once, then reused
+        kwargs = mock_client_cls.call_args.kwargs
+        assert "base_url" not in kwargs  # URL resolved by the client, not the adapter
+        assert kwargs["timeout"] == httpx.Timeout(5)
+        assert client.adapter == "httpx"
 
-            await client.aclose()
-            assert client._async_client is None
-            await client.aclose()  # second close is a no-op
-            assert mock_client.aclose.await_count == 1
 
-    def test_get_with_leading_slash_normalized_for_parity(self):
-        client = Requests("https://api.example.com/v1", timeout=5)
+class TestDualModeVerbs:
+    def test_unified_verbs_dual_mode_no_a_verbs(self):
+        # The same verb name is dual-mode: sync returns a Response, async returns a
+        # coroutine resolving to an AsyncResponse. No a* verbs exist.
         with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
             mock_request.return_value = FakeUnderlying(status_code=200)
-            client.get("/users/42")
+            client = Requests(BASE_URL, adapter="requests")
+            result = client.get("/health")
 
-        # sync: urljoin(base + "/", "users/42") -> identical final URL
-        mock_request.assert_called_once_with(
-            "GET",
-            "https://api.example.com/v1/users/42",
-            timeout=5,
-        )
+        assert isinstance(result, Response)
+        assert not inspect.iscoroutine(result)
+        assert not hasattr(client, "aget")
 
-    async def test_aget_with_leading_slash_normalized_for_parity(self):
-        client = Requests("https://api.example.com/v1", timeout=5)
-        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
+    async def test_async_verb_returns_coroutine_resolving_to_async_response(self):
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
-            mock_client.request = AsyncMock(
-                return_value=FakeUnderlying(status_code=200, engine="httpx"),
-            )
-            await client.aget("/users/42")
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
+            client = Requests(BASE_URL, adapter="httpx")
 
-            # async: AsyncClient created with native base_url, request called with the
-            # leading-slash-stripped path — httpx joins them to the same final URL.
-            assert mock_client_cls.call_args.kwargs["base_url"] == "https://api.example.com/v1"
-            assert mock_client.request.call_args.args == ("GET", "users/42")
+            coro = client.get("/health")
+            assert inspect.iscoroutine(coro)
+            result = await coro
 
-    async def test_aclose_idempotent_and_noop_before_first_async_call(self):
-        client = Requests("https://api.example.com", timeout=5)
-        assert client._async_client is None
+        assert isinstance(result, AsyncResponse)
 
-        await client.aclose()
-        await client.aclose()  # idempotent, no error
 
-        assert client._async_client is None
+class TestSyncPollThenReload:
+    def test_sync_poll_then_reload_succeeds(self, monkeypatch):
+        # Two timeouts: constructor network=5 (every call), method polling=10
+        # (the window). reload replays in place through reexec.
+        sleeps = []
+        monkeypatch.setattr(polling_module.time, "sleep", sleeps.append)
 
-    async def test_async_context_manager_closes_client(self):
-        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
+            mock_request.side_effect = [
+                FakeUnderlying(status_code=503),
+                FakeUnderlying(status_code=200),
+            ]
+            client = Requests(BASE_URL, adapter="requests", timeout=5)
+            resp = client.get("/job", timeout=10, delay=0)
+
+        assert isinstance(resp, Response)
+        assert resp.status_code == 200
+        # Primary request + one in-place reload across the 503 -> 200 transition.
+        assert mock_request.call_count == 2
+        # Every dispatch carries the constructor (network) timeout, full URL.
+        for call in mock_request.call_args_list:
+            assert call.args == ("GET", "https://api.example.com/job")
+            assert call.kwargs == {"timeout": 5}
+        assert sleeps == [0]  # exactly one sleep between the two attempts
+
+
+class TestCloseAndContextManagers:
+    def test_sync_context_manager_is_noop(self):
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
+            mock_request.return_value = FakeUnderlying(status_code=200)
+            with Requests(BASE_URL, adapter="requests") as client:
+                assert client is not None
+                resp = client.get("/health")
+
+        assert resp.status_code == 200
+
+    async def test_close_dual_mode_and_context_managers(self):
+        # async `async with` -> aclose awaited once; double close idempotent.
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
             mock_client = mock_client_cls.return_value
-            mock_client.request = AsyncMock(
-                return_value=FakeUnderlying(status_code=200, engine="httpx"),
-            )
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
             mock_client.aclose = AsyncMock()
 
-            client = Requests("https://api.example.com")
+            client = Requests(BASE_URL, adapter="httpx")
             async with client as entered:
                 assert entered is client  # __aenter__ returns self
-                await client.aget("/x")
+                await client.get("/health")
 
-            # __aexit__ released the lazily-created AsyncClient exactly once.
+            # __aexit__ released the long-lived AsyncClient exactly once.
             mock_client.aclose.assert_awaited_once()
-            assert client._async_client is None
+
+            # Explicit close is idempotent: the adapter's aclose is a no-op once
+            # the client is None, so aclose is still awaited exactly once total.
+            await client.close()
+            mock_client.aclose.assert_awaited_once()
+
+
+class TestUnknownAdapter:
+    def test_unknown_adapter_raises_value_error_before_building_adapter(self):
+        # adapter is validated before any adapter subtype is constructed; an
+        # unknown name raises ValueError for both flavors.
+        for cls in (Requests, Session):
+            with pytest.raises(ValueError, match="unknown adapter"):
+                cls(BASE_URL, adapter="aiohttp")
+
+
+class TestUrlResolvedByClient:
+    def test_url_resolved_by_client_not_adapter_sync(self):
+        # The client joins the path onto base_url; the adapter receives the
+        # full URL. Parity with the async mode below.
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
+            mock_request.return_value = FakeUnderlying(status_code=200)
+            Requests(BASE_URL, adapter="requests", timeout=5).get("/health")
+
+        mock_request.assert_called_once_with("GET", "https://api.example.com/health", timeout=5)
+
+    async def test_url_resolved_by_client_not_adapter_async(self):
+        # The async path resolves the full URL too; the AsyncClient is created
+        # WITHOUT base_url, and request() receives the full URL.
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
+
+            await Requests(BASE_URL, adapter="httpx", timeout=5).get("/health")
+
+            assert "base_url" not in mock_client_cls.call_args.kwargs
+            assert mock_client.request.call_args.args == ("GET", "https://api.example.com/health")
+
+
+class TestSyncClientInAsyncWith:
+    async def test_sync_client_in_async_with_raises_typeerror(self):
+        # One instance = one mode: a sync-mode client in `async with` exits via
+        # __aexit__ -> await self.close() -> sync close() returns None ->
+        # await None -> TypeError (documented misuse).
+        client = Requests(BASE_URL, adapter="requests")
+
+        with pytest.raises(TypeError):
+            async with client:
+                pass
 
 
 class TestSession:
     def test_session_routes_sync_through_held_session(self):
+        # The held requests.Session.request is the flavor's sync engine; the
+        # module-level requests.request is never consulted.
         with (
             mock.patch("resq.http.clients.clients.requests.Session") as mock_session_cls,
             mock.patch("resq.http.clients.clients.requests.request") as mock_module_request,
@@ -191,7 +284,7 @@ class TestSession:
             mock_session = mock_session_cls.return_value
             mock_session.request.return_value = FakeUnderlying(status_code=200)
 
-            session = Session("https://api.example.com", timeout=5)
+            session = Session(BASE_URL, adapter="requests", timeout=5)
             session.get("/users/42")
 
         mock_session.request.assert_called_once_with(
@@ -200,16 +293,3 @@ class TestSession:
             timeout=5,
         )
         mock_module_request.assert_not_called()  # never the fresh-connection path
-
-    async def test_session_aget_uses_long_lived_client(self):
-        with mock.patch("resq.http.clients.clients.httpx.AsyncClient") as mock_client_cls:
-            mock_client = mock_client_cls.return_value
-            mock_client.request = AsyncMock(
-                return_value=FakeUnderlying(status_code=200, engine="httpx"),
-            )
-
-            session = Session("https://api.example.com")
-            await session.aget("/a")
-            await session.aget("/b")
-
-        assert mock_client_cls.call_count == 1  # one long-lived AsyncClient reused

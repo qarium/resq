@@ -1,36 +1,56 @@
-"""HTTP clients for the resq core.
+"""HTTP clients for the resq core (adapter model).
 
-Implements ``Requests`` (a fresh ``requests`` connection per sync call) and
-``Session`` (one persistent ``requests.Session`` reused across sync calls), each
-backed by a lazily-created, long-lived ``httpx`` ``AsyncClient`` for the async
-verbs.
+Two client flavors (``Requests`` — fresh ``requests`` connection per sync call;
+``Session`` — one held ``requests.Session``) mutate from a shared ``Client``
+base. The mode (sync/async) and the engine are selected by the ``adapter``
+constructor argument (``'requests'`` -> sync via the ``requests`` engine;
+``'httpx'`` -> async via the ``httpx`` engine) and fixed on the instance — one
+instance = one mode. An unknown ``adapter`` raises ``ValueError`` before any
+adapter subtype is built.
 
-TIMEOUT OVERLOAD: the constructor ``timeout`` is the NETWORK timeout (connect/read,
-set once on the engine). The per-verb ``timeout`` is the POLLING window — when it is
-``None`` the verb issues a single request with no status check (plain engine
-behavior) and ``delay`` is ignored. Same name, different meaning by position.
+DUAL-MODE DISPATCH — "a branching ``def`` returning a coroutine in the async
+branch": the unified verbs (``get``/``post``/``put``/``delete``/``patch``/
+``head``/``options``), ``close`` and the response ``reload`` share ONE name
+across modes. Each verb is a plain ``def`` that branches on
+``self._adapter.is_async``: in sync mode it returns the ``Response`` directly,
+in async mode it RETURNS (does not await) the result of the async ``_averb``
+helper — i.e. a coroutine the caller awaits. ``reload`` needs no dispatch:
+plain method override (sync ``def`` on ``Response``, ``async def`` on
+``AsyncResponse``).
 
-Dependency-inversion dispatch: each verb builds a no-arg ``reexec`` (sync) /
-``arexec`` (async coroutine function) closure that replays the recipe through the
-private ``_request`` / ``_arequest`` engine hooks (the closures bake in the
-network timeout). The verb runs the PRIMARY through that closure, constructs the
-wrapper with the closure, and injects the primary underlying post-construction;
-it then returns the wrapper (``timeout is None``) or delegates to
-``poll``/``apoll``. ``reload``/``areload`` on the wrapper replay the recipe
-through the same closure — so neither the wrapper nor ``poll``/``apoll`` holds a
-back-reference to the client.
+Architecture A (dependency inversion): each verb resolves the URL, builds the
+no-arg ``reexec`` (sync) / ``arexec`` (async coroutine function) closure from
+the adapter's ``execute`` / ``aexecute`` call (baking in the constructor
+network timeout), runs the PRIMARY through it, wraps the underlying in
+``Response`` / ``AsyncResponse`` (injecting the closure), and — when a
+method-level timeout is set — delegates the polling window to ``poll``. The
+wrapper and ``poll`` hold NO back-reference to the client or the adapter.
+
+TIMEOUT OVERLOAD: the constructor ``timeout`` is the NETWORK timeout
+(connect/read, set once on the engine via the adapter). The per-verb
+``timeout`` is the POLLING window — when it is ``None`` the verb issues a
+single request with no status check (plain engine behavior) and ``delay`` is
+ignored. Same name, different meaning by position.
+
+This cell imports ``requests`` (the sync flavors) but NOT ``httpx`` — the
+``httpx`` engine lives in :mod:`resq.http.adapters`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urljoin
 
-import httpx
 import requests
 
+from ..adapters import Adapter, HttpxAdapter, RequestsAdapter
 from ..polling import poll
 from ..responses import AsyncResponse, Response
+
+# The set of adapter names fixed by the contract. An unknown value raises
+# ValueError before any adapter subtype is constructed.
+_VALID_ADAPTERS = frozenset({"requests", "httpx"})
 
 
 def _normalize_path(path: str) -> str:
@@ -46,12 +66,13 @@ def _normalize_path(path: str) -> str:
 
 
 def _join_url(base_url: str, path: str) -> str:
-    """Join a base URL and a path for the sync engine.
+    """Join a base URL and a path into the fully-qualified request URL.
 
-    ``requests`` has no native ``base_url``, so the base URL is normalized to a
-    trailing slash and the path is stripped of its leading slash before
-    ``urljoin``. The result matches what ``httpx`` (which has a native ``base_url``)
-    produces, keeping the two engines in parity.
+    The client (not the adapter) resolves the URL for BOTH modes — the async
+    adapter's ``AsyncClient`` is therefore created without ``base_url``. The
+    base URL is normalized to a trailing slash and the path is stripped of its
+    leading slash before ``urljoin`` so the result matches what an
+    ``httpx`` ``base_url`` join would produce (engine parity).
 
     Args:
         base_url: the client base URL.
@@ -65,33 +86,57 @@ def _join_url(base_url: str, path: str) -> str:
 
 
 class Client:
-    """Shared state and behavior for the sync/async HTTP client flavors.
+    """Shared state and behavior for the adapter-model HTTP client flavors.
 
-    Both ``Requests`` and ``Session`` mutate from this base: they store the base URL,
-    the network timeout, and a lazily-created long-lived ``httpx`` ``AsyncClient``.
-    They differ only in the sync dispatch (``_request``): ``Requests`` opens a fresh
-    connection per call, while ``Session`` reuses a persistent ``requests.Session``.
-    The async dispatch, the lazy async client, the verbs, ``aclose`` and the
-    async-context-manager lifecycle are identical and therefore live here.
+    Both ``Requests`` and ``Session`` mutate from this base: they store the base
+    URL, the network timeout, and the selected ``Adapter``. They differ only in
+    the requests-engine callable they supply to the sync adapter
+    (``_sync_engine``): ``Requests`` opens a fresh connection per call
+    (module-level ``requests.request``), while ``Session`` reuses a held
+    ``requests.Session`` (its bound ``request``). The unified verbs, ``close``,
+    and BOTH context-manager protocols are identical and therefore live here.
 
-    ``Client`` is the contract base of the two-flavor model — it is not part of the
-    cell facade (not re-exported via ``__all__``); consumers construct ``Requests`` or
-    ``Session`` directly.
+    ``Client`` is the contract base of the two-flavor model — it is not part of
+    the cell facade (not re-exported via ``__all__``); consumers construct
+    ``Requests`` or ``Session`` directly.
 
     Args:
         base_url: the base URL prefixing every request path.
-        timeout: the NETWORK timeout (connect/read) set once on the engine; ``None``
-            leaves it at the engine default.
+        adapter: the engine+mode binding — ``'requests'`` (sync) or ``'httpx'``
+            (async); any other value raises ``ValueError`` before an adapter
+            subtype is built. One instance = one mode.
+        timeout: the NETWORK timeout (connect/read) set once on the engine via
+            the adapter; ``None`` disables it (cross-engine parity).
     """
 
     _base_url: str
     _timeout: float | None
-    _async_client: httpx.AsyncClient | None
+    _adapter: Adapter
 
-    def __init__(self, base_url: str, timeout: float | None = None) -> None:
+    def __init__(self, base_url: str, adapter: str, timeout: float | None = None) -> None:
         self._base_url = base_url
         self._timeout = timeout
-        self._async_client = None
+
+        if adapter not in _VALID_ADAPTERS:
+            raise ValueError(
+                f"unknown adapter {adapter!r}; expected one of {sorted(_VALID_ADAPTERS)!r}",
+            )
+
+        # Build the adapter subtype from the validated name. The sync engine
+        # callable is captured here, once, and held by the adapter — patch the
+        # engine BEFORE constructing the client (patch-then-construct).
+        if adapter == "requests":
+            self._adapter = RequestsAdapter(timeout, self._sync_engine())
+        else:
+            self._adapter = HttpxAdapter(timeout)
+
+    def _sync_engine(self) -> Callable[..., Any]:
+        """Return the requests-engine callable the sync adapter will invoke.
+
+        Hook on the base (raises); overridden by each flavor. Only consulted
+        when ``adapter == 'requests'``.
+        """
+        raise NotImplementedError("_sync_engine must be overridden by a client flavor")
 
     @property
     def base_url(self) -> str:
@@ -99,47 +144,38 @@ class Client:
         return self._base_url
 
     @property
+    def adapter(self) -> str:
+        """str: the adapter name / mode (``'requests'`` or ``'httpx'``), fixed at construction."""
+        return self._adapter.name
+
+    @property
     def timeout(self) -> float | None:
         """float | None: the NETWORK timeout (connect/read) set on the engine."""
         return self._timeout
 
-    async def _arequest(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """Execute an async request against the lazily-created long-lived ``AsyncClient``.
+    def _verb(self, method: str, path: str, timeout: float | None, delay: float, kwargs: dict[str, Any]) -> Response:
+        """Dispatch a sync verb (Architecture A): build ``reexec``, run the primary, return or poll.
+
+        Resolves the full URL, builds the no-arg ``reexec`` closure replaying the
+        recipe through the adapter's ``execute`` (the single source of every
+        underlying), runs the PRIMARY through it, constructs the wrapper with the
+        closure and injects the primary underlying, then returns the wrapper
+        (``timeout is None``) or delegates to :func:`poll`.
 
         Args:
             method: the HTTP method to execute.
-            path: the request path to execute (normalized for ``base_url`` parity).
-            **kwargs: forwarded keyword arguments.
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            kwargs: forwarded verbatim to the adapter's execute call.
 
         Returns:
-            The ``httpx`` response.
+            The sync ``Response`` wrapper.
         """
-        client = self._get_async_client()
-        return await client.request(method, _normalize_path(path), **kwargs)
+        url = _join_url(self._base_url, path)
 
-    def _get_async_client(self) -> httpx.AsyncClient:
-        """Return the lazily-created long-lived ``AsyncClient`` (created on first use)."""
-        if self._async_client is None:
-            timeout = httpx.Timeout(self._timeout) if self._timeout is not None else None
-            self._async_client = httpx.AsyncClient(
-                base_url=self._base_url,
-                follow_redirects=True,
-                timeout=timeout,
-            )
-        return self._async_client
-
-    def _verb(self, method, path, timeout, delay, kwargs):
-        """Dispatch a sync verb (Architecture A): build ``reexec``, run the primary, return or poll.
-
-        Builds the no-arg ``reexec`` closure replaying the recipe through the sync
-        engine (the single source of every underlying), runs the PRIMARY through
-        it, constructs the wrapper with the closure and injects the primary
-        underlying, then returns the wrapper (``timeout is None``) or delegates to
-        :func:`poll`.
-        """
-
-        def reexec():
-            return self._request(method, path, **kwargs)
+        def reexec() -> Any:
+            return self._adapter.execute(method, url, **kwargs)
 
         resp = Response(method, path, kwargs, reexec)
         resp._underlying = reexec()  # primary
@@ -147,17 +183,36 @@ class Client:
             return resp
         return poll(resp, timeout, delay)
 
-    async def _averb(self, method, path, timeout, delay, kwargs):
-        """Dispatch an async verb (Architecture A): build ``arexec``, run the primary, return or apoll.
+    async def _averb(
+        self,
+        method: str,
+        path: str,
+        timeout: float | None,
+        delay: float,
+        kwargs: dict[str, Any],
+    ) -> AsyncResponse:
+        """Dispatch an async verb (Architecture A): build ``arexec``, run the primary, return or poll.
 
-        Async mirror of :meth:`_verb` through the lazy ``AsyncClient``: builds the
-        no-arg ``arexec`` coroutine function, awaits the PRIMARY, constructs the
-        wrapper with the closure and injects the primary underlying, then returns
-        the wrapper (``timeout is None``) or delegates to :func:`apoll`.
+        Async mirror of :meth:`_verb` through the adapter's ``aexecute``: builds
+        the no-arg ``arexec`` coroutine function, awaits the PRIMARY, constructs
+        the wrapper with the closure and injects the primary underlying, then
+        returns the wrapper (``timeout is None``) or delegates to :func:`poll`
+        (awaiting the coroutine ``poll`` returns for an ``AsyncResponse``).
+
+        Args:
+            method: the HTTP method to execute.
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            kwargs: forwarded verbatim to the adapter's aexecute call.
+
+        Returns:
+            The async ``AsyncResponse`` wrapper.
         """
+        url = _join_url(self._base_url, path)
 
-        async def arexec():
-            return await self._arequest(method, path, **kwargs)
+        async def arexec() -> Any:
+            return await self._adapter.aexecute(method, url, **kwargs)
 
         resp = AsyncResponse(method, path, kwargs, arexec)
         resp._underlying = await arexec()  # primary
@@ -166,118 +221,125 @@ class Client:
         return await poll(resp, timeout, delay)
 
     def get(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``GET``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``GET``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("GET", path, timeout, delay, kwargs)
         return self._verb("GET", path, timeout, delay, kwargs)
 
     def post(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``POST``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``POST``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("POST", path, timeout, delay, kwargs)
         return self._verb("POST", path, timeout, delay, kwargs)
 
     def put(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``PUT``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``PUT``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("PUT", path, timeout, delay, kwargs)
         return self._verb("PUT", path, timeout, delay, kwargs)
 
     def delete(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``DELETE``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``DELETE``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("DELETE", path, timeout, delay, kwargs)
         return self._verb("DELETE", path, timeout, delay, kwargs)
 
     def patch(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``PATCH``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``PATCH``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("PATCH", path, timeout, delay, kwargs)
         return self._verb("PATCH", path, timeout, delay, kwargs)
 
     def head(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``HEAD``; a single request when ``timeout`` is None, else poll."""
+        """Issue a ``HEAD``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("HEAD", path, timeout, delay, kwargs)
         return self._verb("HEAD", path, timeout, delay, kwargs)
 
     def options(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue an ``OPTIONS``; a single request when ``timeout`` is None, else poll."""
+        """Issue an ``OPTIONS``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        if self._adapter.is_async:
+            return self._averb("OPTIONS", path, timeout, delay, kwargs)
         return self._verb("OPTIONS", path, timeout, delay, kwargs)
 
-    async def aget(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``GET``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("GET", path, timeout, delay, kwargs)
+    def close(self):
+        """Release the engine resources for the instance's mode. Dual-mode by adapter.
 
-    async def apost(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``POST``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("POST", path, timeout, delay, kwargs)
+        Sync mode: a no-op (the ``requests.Session`` held by the ``Session``
+        flavor is released by garbage collection — not closed here). Async mode:
+        RETURNS (does not await) the adapter's ``aclose`` coroutine, which the
+        caller awaits (also invoked by ``__aexit__``). Idempotent; safe to call
+        after closing.
 
-    async def aput(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``PUT``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("PUT", path, timeout, delay, kwargs)
-
-    async def adelete(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``DELETE``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("DELETE", path, timeout, delay, kwargs)
-
-    async def apatch(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``PATCH``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("PATCH", path, timeout, delay, kwargs)
-
-    async def ahead(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await a ``HEAD``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("HEAD", path, timeout, delay, kwargs)
-
-    async def aoptions(self, path, timeout=None, delay=1.0, **kwargs):
-        """Await an ``OPTIONS``; a single request when ``timeout`` is None, else apoll."""
-        return await self._averb("OPTIONS", path, timeout, delay, kwargs)
-
-    async def aclose(self) -> None:
-        """Close the lazily-created ``AsyncClient`` if it was ever created.
-
-        Idempotent: a no-op when no async request was ever issued (the client was
-        never created). Only the async client is torn down — the held
-        ``requests.Session`` (on ``Session``) is left to garbage collection per the
-        contract.
+        Returns:
+            ``None`` in sync mode; a coroutine resolving to ``None`` in async mode.
         """
-        if self._async_client is not None:
-            await self._async_client.aclose()
-            self._async_client = None
+        if self._adapter.is_async:
+            return self._adapter.aclose()
+        return None
+
+    def __enter__(self) -> Client:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     async def __aenter__(self) -> Client:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        await self.aclose()
+        await self.close()
 
 
 class Requests(Client):
     """Sync-flavor client: a fresh ``requests`` connection per sync call.
 
-    Each sync verb opens a brand-new connection via module-level ``requests.request``.
-    The async verbs share a single lazily-created, long-lived ``httpx.AsyncClient``.
+    Supplies the module-level ``requests.request`` (fresh connection per sync
+    call) as the flavor's requests-engine callable to the adapter. Inherits
+    every unified verb, ``close``, and both context-manager protocols from
+    ``Client``.
 
     Args:
         base_url: the base URL prefixing every request path.
-        timeout: the NETWORK timeout (connect/read) applied to every sync request.
+        adapter: the engine+mode binding — ``'requests'`` (sync) or ``'httpx'``
+            (async).
+        timeout: the NETWORK timeout (connect/read) applied via the adapter.
     """
 
-    def __init__(self, base_url: str, timeout: float | None = None) -> None:
-        super().__init__(base_url, timeout)
+    def __init__(self, base_url: str, adapter: str, timeout: float | None = None) -> None:
+        super().__init__(base_url, adapter, timeout)
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
-        """Execute a sync request via module-level ``requests.request`` (fresh connection)."""
-        url = _join_url(self._base_url, path)
-        return requests.request(method, url, timeout=self._timeout, **kwargs)
+    def _sync_engine(self) -> Callable[..., Any]:
+        """The module-level ``requests.request`` — a fresh connection per sync call."""
+        return requests.request
 
 
 class Session(Client):
     """Persistent-flavor client: one held ``requests.Session`` reused across sync calls.
 
-    Sync verbs route through the held ``requests.Session`` (persistent pool/cookies).
-    The async verbs share a single lazily-created, long-lived ``httpx.AsyncClient``.
-    The held ``requests.Session`` is NOT explicitly closed by ``aclose`` — teardown is
-    scoped to the async client only; the session relies on garbage collection.
+    Holds one ``requests.Session`` across sync calls and supplies its bound
+    ``request`` method as the flavor's requests-engine callable to the adapter.
+    In async mode it behaves as ``Requests`` (the shared long-lived
+    ``httpx.AsyncClient`` is owned by the adapter, not the flavor). The held
+    ``requests.Session`` is created BEFORE ``super().__init__`` (so the base can
+    capture the engine callable) and is NOT explicitly closed by ``close`` — it
+    relies on garbage collection.
 
     Args:
         base_url: the base URL prefixing every request path.
-        timeout: the NETWORK timeout (connect/read) applied to every sync request.
+        adapter: the engine+mode binding — ``'requests'`` (sync) or ``'httpx'``
+            (async).
+        timeout: the NETWORK timeout (connect/read) applied via the adapter.
     """
 
-    def __init__(self, base_url: str, timeout: float | None = None) -> None:
-        super().__init__(base_url, timeout)
-        self._session = requests.Session()
+    _session: requests.Session
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
-        """Execute a sync request via the held ``requests.Session`` (persistent pool)."""
-        url = _join_url(self._base_url, path)
-        return self._session.request(method, url, timeout=self._timeout, **kwargs)
+    def __init__(self, base_url: str, adapter: str, timeout: float | None = None) -> None:
+        # Created BEFORE super().__init__ so Client.__init__ can capture
+        # self._session.request via self._sync_engine().
+        self._session = requests.Session()
+        super().__init__(base_url, adapter, timeout)
+
+    def _sync_engine(self) -> Callable[..., Any]:
+        """The bound ``Session.request`` of the held ``requests.Session`` (persistent pool)."""
+        return self._session.request
