@@ -282,6 +282,13 @@ class Client:
         return self
 
     def __exit__(self, *exc: object) -> None:
+        # Sync ``with`` cannot await the async adapter's ``aclose`` coroutine, so
+        # an httpx-mode client must use ``async with``. Raise rather than silently
+        # drop the coroutine (which would leak the long-lived ``AsyncClient``) —
+        # mirrors the reverse misuse (sync client in ``async with`` -> TypeError),
+        # one instance = one mode.
+        if self._adapter.is_async:
+            raise TypeError("use 'async with' for an httpx-mode client")
         self.close()
 
     async def __aenter__(self) -> Client:
@@ -320,10 +327,10 @@ class Session(Client):
     Holds one ``requests.Session`` across sync calls and supplies its bound
     ``request`` method as the flavor's requests-engine callable to the adapter.
     In async mode it behaves as ``Requests`` (the shared long-lived
-    ``httpx.AsyncClient`` is owned by the adapter, not the flavor). The held
-    ``requests.Session`` is created BEFORE ``super().__init__`` (so the base can
-    capture the engine callable) and is NOT explicitly closed by ``close`` — it
-    relies on garbage collection.
+    ``httpx.AsyncClient`` is owned by the adapter, not the flavor). In sync mode
+    the held ``requests.Session`` is created BEFORE ``super().__init__`` (so the
+    base can capture the engine callable); in async mode none is created. It is
+    NOT explicitly closed by ``close`` — it relies on garbage collection.
 
     Args:
         base_url: the base URL prefixing every request path.
@@ -332,12 +339,18 @@ class Session(Client):
         timeout: the NETWORK timeout (connect/read) applied via the adapter.
     """
 
-    _session: requests.Session
+    _session: requests.Session | None
 
     def __init__(self, base_url: str, adapter: str, timeout: float | None = None) -> None:
-        # Created BEFORE super().__init__ so Client.__init__ can capture
-        # self._session.request via self._sync_engine().
-        self._session = requests.Session()
+        # The held requests.Session is the sync engine's connection pool, needed
+        # only in sync mode (Client.__init__ captures self._session.request via
+        # self._sync_engine() when adapter == "requests"). In httpx mode the
+        # engine is the adapter's AsyncClient, so building a Session here would
+        # construct and immediately discard it (and would run before adapter
+        # validation, wasting it even on an unknown adapter). Created BEFORE
+        # super().__init__ so the base can capture the engine callable.
+        if adapter == "requests":
+            self._session = requests.Session()
         super().__init__(base_url, adapter, timeout)
 
     def _sync_engine(self) -> Callable[..., Any]:

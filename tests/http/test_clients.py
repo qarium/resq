@@ -273,6 +273,18 @@ class TestSyncClientInAsyncWith:
                 pass
 
 
+class TestAsyncClientInSyncWith:
+    def test_async_client_in_sync_with_raises_typeerror(self):
+        # Symmetric misuse: an httpx-mode client in sync `with` exits via __exit__,
+        # which cannot await the adapter's aclose coroutine. Raise TypeError
+        # rather than silently dropping the coroutine (which would leak the
+        # long-lived AsyncClient) — one instance = one mode.
+        client = Requests(BASE_URL, adapter="httpx")
+
+        with pytest.raises(TypeError), client:
+            pass
+
+
 class TestSession:
     def test_session_routes_sync_through_held_session(self):
         # The held requests.Session.request is the flavor's sync engine; the
@@ -293,3 +305,101 @@ class TestSession:
             timeout=5,
         )
         mock_module_request.assert_not_called()  # never the fresh-connection path
+
+    def test_session_does_not_construct_session_in_httpx_mode(self):
+        # The held requests.Session is the sync engine's pool; in async mode the
+        # engine is the adapter's AsyncClient, so no Session must be built.
+        with mock.patch("resq.http.clients.clients.requests.Session") as mock_session_cls:
+            Session(BASE_URL, adapter="httpx", timeout=5)
+        mock_session_cls.assert_not_called()
+
+    def test_session_does_not_construct_session_before_unknown_adapter_raises(self):
+        # An unknown adapter fails validation in the base; the sync-only Session
+        # is never built, so no requests.Session is constructed before the
+        # ValueError.
+        with (
+            mock.patch("resq.http.clients.clients.requests.Session") as mock_session_cls,
+            pytest.raises(ValueError, match="unknown adapter"),
+        ):
+            Session(BASE_URL, adapter="aiohttp", timeout=5)
+        mock_session_cls.assert_not_called()
+
+
+class TestAllVerbsDispatch:
+    """Every unified verb dispatches its HTTP method string to the engine.
+
+    Guards against copy-paste method-string typos (e.g. ``POST`` accidentally
+    dispatching ``GET``) — the six non-``get`` verbs are otherwise unexercised by
+    the logic tests.
+    """
+
+    @pytest.mark.parametrize(
+        ("verb", "method"),
+        [
+            ("get", "GET"),
+            ("post", "POST"),
+            ("put", "PUT"),
+            ("delete", "DELETE"),
+            ("patch", "PATCH"),
+            ("head", "HEAD"),
+            ("options", "OPTIONS"),
+        ],
+    )
+    def test_each_sync_verb_dispatches_its_method(self, verb, method):
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
+            mock_request.return_value = FakeUnderlying(status_code=200)
+            client = Requests(BASE_URL, adapter="requests", timeout=5)
+            result = getattr(client, verb)("/health")
+
+        assert isinstance(result, Response)
+        mock_request.assert_called_once_with(method, "https://api.example.com/health", timeout=5)
+
+    @pytest.mark.parametrize(
+        ("verb", "method"),
+        [
+            ("get", "GET"),
+            ("post", "POST"),
+            ("put", "PUT"),
+            ("delete", "DELETE"),
+            ("patch", "PATCH"),
+            ("head", "HEAD"),
+            ("options", "OPTIONS"),
+        ],
+    )
+    async def test_each_async_verb_dispatches_its_method(self, verb, method):
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
+            client = Requests(BASE_URL, adapter="httpx", timeout=5)
+            result = await getattr(client, verb)("/health")
+
+        assert isinstance(result, AsyncResponse)
+        assert mock_client.request.call_args.args == (method, "https://api.example.com/health")
+
+
+class TestVerbKwargsForwarding:
+    """Client verbs forward ``**kwargs`` verbatim to the underlying engine."""
+
+    def test_sync_verb_forwards_kwargs_to_engine(self):
+        with mock.patch("resq.http.clients.clients.requests.request") as mock_request:
+            mock_request.return_value = FakeUnderlying(status_code=200)
+            client = Requests(BASE_URL, adapter="requests", timeout=5)
+            client.get("/search", params={"q": "1"}, headers={"X-Test": "y"})
+
+        mock_request.assert_called_once_with(
+            "GET",
+            "https://api.example.com/search",
+            timeout=5,
+            params={"q": "1"},
+            headers={"X-Test": "y"},
+        )
+
+    async def test_async_verb_forwards_kwargs_to_engine(self):
+        with mock.patch("resq.http.adapters.adapters.httpx.AsyncClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.request = AsyncMock(return_value=FakeUnderlying(status_code=200, engine="httpx"))
+            client = Requests(BASE_URL, adapter="httpx", timeout=5)
+            await client.get("/search", params={"q": "1"}, headers={"X-Test": "y"})
+
+        assert mock_client.request.call_args.args == ("GET", "https://api.example.com/search")
+        assert mock_client.request.call_args.kwargs == {"params": {"q": "1"}, "headers": {"X-Test": "y"}}
