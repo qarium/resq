@@ -13,8 +13,8 @@ Annotations: |
   embeddings below; resq/__init__.py performs the relative re-exports.
 
   The response wrappers (BaseResponse / Response / AsyncResponse) and the polling
-  routines (poll / apoll) are NOT re-exported here — reach them through resq/http
-  when their types are needed directly.
+  routine (poll) are NOT re-exported here — reach them through resq/http when
+  their types are needed directly.
 
   Use `convention` for the public surface and the relative-import re-export style.
 
@@ -26,5 +26,5 @@ Annotations: |
 ---
 
 Author: Goga
-CreatedAt: 07/07/26
+CreatedAt: 10/08/26
 Description: resq package facade — re-exports the public HTTP client API (Requests/Session).

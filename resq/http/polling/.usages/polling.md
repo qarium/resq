@@ -1,19 +1,20 @@
-# poll / apoll — driving a polling loop directly
+# poll — driving a polling loop directly
 
-**Domain.** Using the `poll` / `apoll` routines from the `resq.http` surface to poll an
+**Domain.** Using the `poll` routine from the `resq.http` surface to poll an
 already-built response wrapper until a success status arrives.
 
 **Audience.** Consumers who build a response wrapper themselves (or hold one from a
 single, non-polling request) and want to poll it as a separate step rather than through
 a client verb's `timeout`.
 
-`poll` (sync) and `apoll` (async) operate on an **already-built** wrapper — they never
-issue the first request and never reference a client. They call `raise_for_status`, and
-on a bad status retry through the wrapper's own `reload` / `areload` until success or
-until the `timeout` window elapses.
+`poll` operates on an **already-built** wrapper — it never issues the first request and
+never references a client or adapter. It calls `raise_for_status`, and on a bad status
+retries through the wrapper's own `reload` until success or until the `timeout` window
+elapses. The mode (sync/async) is determined by the wrapper's type: a `Response` runs a
+sync loop; an `AsyncResponse` runs an async loop (await it).
 
 ```python
-from resq.http import poll, apoll
+from resq.http import poll
 ```
 
 ---
@@ -27,9 +28,9 @@ it as a separate call:
 from resq import Requests
 from resq.http import poll
 
-client = Requests("https://api.example.com", timeout=5)   # network timeout
-r = client.get("/job/42")                                  # single request, a Response
-r = poll(r, timeout=30, delay=2)                           # poll up to 30s, 2s apart
+client = Requests("https://api.example.com", adapter="requests", timeout=5)
+r = client.get("/job/42")            # single request, a Response
+r = poll(r, timeout=30, delay=2)     # poll up to 30s, 2s apart
 ```
 
 The same `r` object is returned; its underlying is refreshed in place on each retry.
@@ -40,27 +41,27 @@ The same `r` object is returned; its underlying is refreshed in place on each re
 
 ```python
 from resq import Requests
-from resq.http import apoll
+from resq.http import poll
 
-async with Requests("https://api.example.com", timeout=5) as client:
-    r = await client.aget("/job/42")                       # single request, an AsyncResponse
-    r = await apoll(r, timeout=30, delay=2)                # poll up to 30s, 2s apart
+async with Requests("https://api.example.com", adapter="httpx", timeout=5) as client:
+    r = await client.get("/job/42")        # single request, an AsyncResponse
+    r = await poll(r, timeout=30, delay=2) # poll up to 30s, 2s apart
 ```
 
 ---
 
-## When you do not need poll / apoll directly
+## When you do not need poll directly
 
-Most consumers never call `poll` / `apoll` themselves: passing a `timeout` to a client
-verb makes the verb poll internally and return the already-polled wrapper.
+Most consumers never call `poll` themselves: passing a `timeout` to a client verb makes
+the verb poll internally and return the already-polled wrapper.
 
 ```python
-r = client.get("/job/42", timeout=30, delay=2)            # the verb polls for you
+r = client.get("/job/42", timeout=30, delay=2)   # the verb polls for you
 ```
 
-Reach for `poll` / `apoll` directly only when the primary request and the polling loop
-must be separate steps — for example, inspecting the primary response before deciding
-to poll, or polling a wrapper obtained from elsewhere.
+Reach for `poll` directly only when the primary request and the polling loop must be
+separate steps — for example, inspecting the primary response before deciding to poll,
+or polling a wrapper obtained from elsewhere.
 
 ---
 
@@ -68,16 +69,14 @@ to poll, or polling a wrapper obtained from elsewhere.
 
 If the window elapses without a success-status response, the LAST response is returned
 (its status is the final non-2xx). No exception is raised — inspect `ok` /
-`status_code`, or call `reload` / `areload` to retry:
+`status_code`, or call `reload` to retry:
 
 ```python
 r = poll(r, timeout=30, delay=2)
 if not r.ok:
-    ...                       # window elapsed, last status non-2xx
-    r.reload()                # one more manual attempt
+    ...                        # window elapsed, last status non-2xx
+    r.reload()                 # sync; await r.reload() for an AsyncResponse
 ```
-
-The same applies to the async path — `await r.areload()` retries.
 
 ---
 
@@ -91,4 +90,6 @@ The same applies to the async path — `await r.areload()` retries.
 - Polling retries only on a bad **status** (4xx/5xx after `raise_for_status`).
   Transport-level failures (connection, TLS, read-timeout) propagate immediately and are
   not retried.
-- `poll` / `apoll` do not raise on window expiry; they return the last response.
+- `poll` does not raise on window expiry; it returns the last response.
+- The mode is fixed by the wrapper's type — a sync `Response` yields a sync loop, an
+  `AsyncResponse` yields an async loop (await the call and `reload`).
