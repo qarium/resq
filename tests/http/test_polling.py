@@ -1,12 +1,14 @@
 """Contract and logic tests for resq.http.polling.
 
-Contract tests verify the declared API (importability, sync vs coroutine, the
-three-parameter signature over a pre-built wrapper, and that ``Response`` /
-``AsyncResponse`` are imported into the module). Logic tests exercise the
-polling loops over a pre-built wrapper against the ``reexec`` / ``arexec``
-injection seams (``build_response`` / ``build_async_response``), patching only
+Contract tests verify the unified API: ``poll`` is importable and a plain
+``def`` (NOT a coroutine function) with the three-parameter signature over a
+pre-built wrapper; ``apoll`` is absent from the module; and ``Response`` /
+``AsyncResponse`` are imported into the module. Logic tests exercise the polling
+loops over a pre-built wrapper against the ``reexec`` / ``arexec`` injection
+seams (``build_response`` / ``build_async_response``), patching only
 ``time.sleep`` / ``asyncio.sleep`` / ``time.monotonic`` where the deadline or
-sleep behavior must be controlled.
+sleep behavior must be controlled. The sync path drives ``poll`` directly; the
+async path awaits the coroutine ``poll`` returns for an ``AsyncResponse``.
 """
 
 import inspect
@@ -15,7 +17,7 @@ import httpx
 import pytest
 import requests
 from resq.http.polling import polling as polling_module
-from resq.http.polling.polling import apoll, poll
+from resq.http.polling.polling import poll
 from resq.http.responses.responses import AsyncResponse, Response
 
 from tests.http.conftest import FakeUnderlying, build_async_response, build_response
@@ -47,20 +49,17 @@ def _monotonic_seq(values):
 
 
 class TestPollingContract:
-    def test_routines_are_importable(self):
+    def test_poll_is_importable(self):
         assert callable(poll)
-        assert callable(apoll)
 
-    def test_poll_is_sync_apoll_is_coroutine(self):
+    def test_poll_is_not_coroutine_function(self):
         assert not inspect.iscoroutinefunction(poll)
-        assert inspect.iscoroutinefunction(apoll)
+
+    def test_apoll_is_absent_from_module(self):
+        assert not hasattr(polling_module, "apoll")
 
     def test_poll_signature_is_three_params(self):
         params = list(inspect.signature(poll).parameters)
-        assert params == ["response", "timeout", "delay"]
-
-    def test_apoll_signature_is_three_params(self):
-        params = list(inspect.signature(apoll).parameters)
         assert params == ["response", "timeout", "delay"]
 
     def test_contract_types_imported_into_module(self):
@@ -68,19 +67,18 @@ class TestPollingContract:
         assert polling_module.AsyncResponse is AsyncResponse
 
 
-class TestPoll:
-    def test_timeout_none_returns_response_without_raise(self):
+class TestPollSync:
+    def test_timeout_none_skips_raise_for_status(self):
         # A bad status is returned as-is: no raise_for_status in the None path.
         resp, reexec = build_response([FakeUnderlying(status_code=500)])
 
         result = poll(resp, None, 1.0)
 
-        assert isinstance(result, Response)
         assert result is resp
         assert resp.status_code == 500
         assert reexec.call_count == 1  # primary only; poll short-circuits
 
-    def test_get_polls_until_success(self, monkeypatch):
+    def test_polls_until_success(self, monkeypatch):
         sleeps = []
         monkeypatch.setattr(polling_module.time, "sleep", sleeps.append)
 
@@ -90,6 +88,7 @@ class TestPoll:
                 FakeUnderlying(status_code=200),
             ]
         )
+
         resp = poll(resp, 10, 0)
 
         assert resp.status_code == 200
@@ -97,24 +96,9 @@ class TestPoll:
         assert reexec.call_count == 2
         assert sleeps == [0]
 
-    def test_poll_returns_last_response_on_timeout(self, monkeypatch):
+    def test_poll_window_expiry_returns_last_response(self, monkeypatch):
         # deadline computed from the first monotonic() (0.0 -> deadline = 10);
         # every later monotonic() returns 100 -> past deadline on first retry.
-        monkeypatch.setattr(polling_module.time, "monotonic", _always_after_first(100.0))
-        sleeps = []
-        monkeypatch.setattr(polling_module.time, "sleep", sleeps.append)
-
-        resp, _ = build_response([FakeUnderlying(status_code=503)])
-
-        result = poll(resp, 10, 0)
-
-        assert isinstance(result, Response)
-        assert result.status_code == 503
-        # The deadline is exceeded on the first retry, so no sleep occurs.
-        assert sleeps == []
-
-    def test_poll_timeout_last_response_is_reloadable(self, monkeypatch):
-        # The response returned on exhaustion keeps its recipe, so reload retries.
         monkeypatch.setattr(polling_module.time, "monotonic", _always_after_first(100.0))
         sleeps = []
         monkeypatch.setattr(polling_module.time, "sleep", sleeps.append)
@@ -127,15 +111,20 @@ class TestPoll:
         )
 
         result = poll(resp, 10, 0)
-        assert result.status_code == 503
 
-        resp.reload()  # manual retry after window exhaustion
+        assert result is resp
+        assert result.status_code == 503
+        # The deadline is exceeded on the first retry, so no sleep, no reload.
+        assert sleeps == []
+        assert reexec.call_count == 1  # primary only
+
+        # The exhausted response keeps its recipe: reload retries.
+        resp.reload()
 
         assert resp.status_code == 200
         assert reexec.call_count == 2  # primary + manual reload
-        assert sleeps == []  # the deadline is hit before any sleep
 
-    def test_poll_propagates_transport_error(self, monkeypatch):
+    def test_poll_propagates_transport_error_sync(self, monkeypatch):
         # Re-scoped for Architecture A: poll meets transport only on reload.
         # Primary is a bad-status 503 (enters the retry branch); the reload
         # raises a transport error, which propagates immediately (not retried).
@@ -184,6 +173,7 @@ class TestPoll:
                 FakeUnderlying(status_code=200),
             ]
         )
+
         resp = poll(resp, 10, 0)
 
         assert resp.status_code == 200
@@ -205,6 +195,7 @@ class TestPoll:
                 FakeUnderlying(status_code=503),
             ]
         )
+
         resp = poll(resp, timeout=1, delay=10)
 
         assert resp.status_code == 503
@@ -212,18 +203,30 @@ class TestPoll:
         assert sleeps == [10]
 
 
-class TestApoll:
-    async def test_timeout_none_returns_response_without_raise(self):
+class TestPollAsync:
+    async def test_poll_returns_coroutine_for_async_wrapper(self):
+        # poll is a branching def: for an AsyncResponse it returns the _apoll
+        # coroutine (NOT awaited internally) — the caller awaits it.
+        resp, _ = await build_async_response([FakeUnderlying(status_code=200, engine="httpx")])
+
+        coro = poll(resp, 10, 0)
+
+        assert inspect.iscoroutine(coro)
+        result = await coro
+        assert result is resp
+
+    async def test_timeout_none_skips_raise_for_status(self):
+        # timeout=None short-circuits BEFORE the isinstance branch: the wrapper
+        # is returned directly (not a coroutine), with no status check.
         resp, arexec = await build_async_response([FakeUnderlying(status_code=500, engine="httpx")])
 
-        result = await apoll(resp, None, 1.0)
+        result = poll(resp, None, 1.0)
 
-        assert isinstance(result, AsyncResponse)
         assert result is resp
         assert resp.status_code == 500
-        assert arexec.call_count == 1
+        assert arexec.call_count == 1  # primary only; poll short-circuits
 
-    async def test_apolls_until_success(self, monkeypatch):
+    async def test_polls_until_success(self, monkeypatch):
         sleeps = []
 
         async def fake_sleep(d):
@@ -237,7 +240,8 @@ class TestApoll:
                 FakeUnderlying(status_code=200, engine="httpx"),
             ]
         )
-        resp = await apoll(resp, 10, 0)
+
+        resp = await poll(resp, 10, 0)
 
         assert resp.status_code == 200
         # Confirms the async loop catches httpx.HTTPStatusError (not RequestError):
@@ -245,29 +249,12 @@ class TestApoll:
         assert arexec.call_count == 2
         assert sleeps == [0]
 
-    async def test_apoll_returns_last_response_on_timeout(self, monkeypatch):
+    async def test_poll_window_expiry_returns_last_response(self, monkeypatch):
         monkeypatch.setattr(polling_module.time, "monotonic", _always_after_first(100.0))
         sleeps = []
 
         async def fake_sleep(d):
             sleeps.append(d)
-
-        monkeypatch.setattr(polling_module.asyncio, "sleep", fake_sleep)
-
-        resp, _ = await build_async_response([FakeUnderlying(status_code=503, engine="httpx")])
-
-        result = await apoll(resp, 10, 0)
-
-        assert isinstance(result, AsyncResponse)
-        assert result.status_code == 503
-        assert sleeps == []
-
-    async def test_apoll_timeout_last_response_is_areloadable(self, monkeypatch):
-        # The response returned on exhaustion keeps its recipe, so areload retries.
-        monkeypatch.setattr(polling_module.time, "monotonic", _always_after_first(100.0))
-
-        async def fake_sleep(d):
-            pass
 
         monkeypatch.setattr(polling_module.asyncio, "sleep", fake_sleep)
 
@@ -278,17 +265,23 @@ class TestApoll:
             ]
         )
 
-        result = await apoll(resp, 10, 0)
-        assert result.status_code == 503
+        result = await poll(resp, 10, 0)
 
-        await resp.areload()  # manual retry after window exhaustion
+        assert result is resp
+        assert result.status_code == 503
+        # The deadline is exceeded on the first retry, so no sleep, no reload.
+        assert sleeps == []
+        assert arexec.call_count == 1  # primary only
+
+        # The exhausted response keeps its recipe: reload retries.
+        await resp.reload()
 
         assert resp.status_code == 200
-        assert arexec.call_count == 2  # primary + manual areload
+        assert arexec.call_count == 2  # primary + manual reload
 
-    async def test_apoll_propagates_transport_error(self, monkeypatch):
-        # Re-scoped for Architecture A: apoll meets transport only on areload.
-        # Primary is a bad-status 503 (enters the retry branch); the areload
+    async def test_poll_propagates_transport_error_async(self, monkeypatch):
+        # Re-scoped for Architecture A: poll meets transport only on reload.
+        # Primary is a bad-status 503 (enters the retry branch); the reload
         # raises a transport error (a httpx.RequestError, sibling of
         # HTTPStatusError), which propagates immediately (not retried).
         sleeps = []
@@ -306,12 +299,12 @@ class TestApoll:
         )
 
         with pytest.raises(httpx.ConnectError):
-            await apoll(resp, 10, 0)
+            await poll(resp, 10, 0)
 
         assert sleeps == [0]
-        assert arexec.call_count == 2  # primary + the failed areload
+        assert arexec.call_count == 2  # primary + the failed reload
 
-    async def test_apoll_forwards_nonzero_delay_to_sleep(self, monkeypatch):
+    async def test_poll_forwards_nonzero_delay_to_sleep(self, monkeypatch):
         sleeps = []
 
         async def fake_sleep(d):
@@ -325,11 +318,11 @@ class TestApoll:
                 FakeUnderlying(status_code=200, engine="httpx"),
             ]
         )
-        await apoll(resp, 10, 0.25)
+        await poll(resp, 10, 0.25)
 
         assert sleeps == [0.25]
 
-    async def test_apoll_retries_more_than_once_until_success(self, monkeypatch):
+    async def test_poll_retries_more_than_once_until_success(self, monkeypatch):
         sleeps = []
 
         async def fake_sleep(d):
@@ -344,7 +337,8 @@ class TestApoll:
                 FakeUnderlying(status_code=200, engine="httpx"),
             ]
         )
-        resp = await apoll(resp, 10, 0)
+
+        resp = await poll(resp, 10, 0)
 
         assert resp.status_code == 200
         assert arexec.call_count == 3

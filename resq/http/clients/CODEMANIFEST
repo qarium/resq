@@ -5,12 +5,16 @@ Usages:
 
 Imports:
   - Types:
+      - Adapter
+      - RequestsAdapter
+      - HttpxAdapter
+    From: resq/http/adapters
+  - Types:
       - Response
       - AsyncResponse
     From: resq/http/responses
   - Types:
       - poll
-      - apoll
     From: resq/http/polling
 
 Annotations: |
@@ -18,166 +22,168 @@ Annotations: |
   the mirrored test structure, and Python 3.10+ typing (typing.Optional per
   UP045). pydantic is NOT used in this cell.
 
-  Two client flavors (`Requests` / `Session`) mutate from a shared `Client` base:
-  sync verbs on `requests` (`Requests` opens a fresh connection per call, `Session`
-  reuses one requests.Session); the async a* verbs share a lazily-created,
-  long-lived httpx.AsyncClient. The common verbs, the lazy async client lifecycle,
-  aclose, and the async-context-manager protocol live on `Client`; each flavor only
-  overrides the sync _request dispatch — all public verbs and properties are
+  Two client flavors (`Requests` / `Session`) mutate from a shared `Client`
+  base. The mode (sync/async) and the engine are selected by the adapter
+  argument ('requests' → sync via the `requests` engine; 'httpx' → async via the
+  `httpx` engine); the set is fixed and an unknown value raises. Each instance
+  operates in exactly one mode, fixed at construction. The common verbs
+  (get/post/put/delete/patch/head/options), close, and BOTH context-manager
+  protocols (the sync with-statement for the sync mode, the async with-statement
+  for the async mode) live on `Client`; each flavor only supplies the
+  requests-engine callable (the module-level requests call for `Requests`, a
+  held requests.Session for `Session`) — all public verbs and properties are
   declared directly on `Client` (the extractor does not follow inheritance).
+
+  Each verb resolves the URL, builds the no-arg re-exec closure from the
+  `Adapter` execute call (reexec for the sync mode, arexec for the async mode),
+  calls it once for the primary request, wraps the underlying in the mode's
+  response type (`Response` / `AsyncResponse`) injecting the closure, and — when
+  a method-level timeout is set — delegates the polling window to `poll`. The
+  wrapper and `poll` hold no reference to the client or the adapter (Architecture
+  A preserved).
+
+  The same verb name is dual-mode: when adapter is 'requests' it returns the
+  `Response` directly (sync); when adapter is 'httpx' it returns a coroutine
+  that resolves to an `AsyncResponse` (await it). The exact dispatch mechanism
+  is a design-stage decision; the contract fixes the per-mode behavior.
 
   Two distinct timeouts: the constructor timeout is the NETWORK timeout
   (connect/read, set once on the engine); the per-verb timeout is the POLLING
-  window. Each verb builds its response wrapper on `Client` and injects a re-execute
-  source, so the wrapper can reload/areload without referencing this cell
-  (dependency inversion).
+  window.
 
 ---
 
-"Client(base_url: str, timeout: float | None = None)":
+"Client(base_url: str, adapter: str, timeout: float | None = None)":
   location: clients.py
   annotations: |
-    Shared base and contract root of the two-flavor client model — owns the base
-    URL, the network timeout, the lazily-created long-lived httpx.AsyncClient, every
-    sync/async verb, aclose, and the async-context-manager protocol. The two flavors
-    (`Requests`, `Session`) mutate from it and differ only in the sync _request
-    dispatch.
+    Mode-aware HTTP client root — owns the base URL, the network timeout, the
+    selected `Adapter`, every unified verb, close, and BOTH context-manager
+    protocols. The two flavors (`Requests`, `Session`) mutate from it and differ
+    only in the requests-engine callable they supply to the adapter.
 
     `Client` is NOT part of the cell facade — it is not re-exported via __all__;
     consumers construct `Requests` or `Session`. It is public only so the shared
     verbs and properties are declared where the extractor reads them.
 
     `base_url`: origin prefixed to every request path.
-    `timeout`: NETWORK timeout (connect/read), set once here; maps to the `requests`
-    timeout and an `httpx` Timeout. None leaves the engine at its default.
+    `adapter`: engine+mode binding — 'requests' (sync) or 'httpx' (async); any
+      other value raises. Validated and mapped to the adapter subtype at
+      construction (`RequestsAdapter` for 'requests', `HttpxAdapter` for
+      'httpx'); one instance = one mode.
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the
+      `requests` timeout and an `httpx` Timeout. None leaves the engine at its
+      default.
 
     Requirements:
-    - Support the async-with lifecycle; release the AsyncClient via aclose (or
-      async with) when done.
+    - Support BOTH lifecycles: the sync with-statement (sync mode) and the async
+      with-statement (async mode). Release the async engine via the close path
+      or the async with-statement when done.
+    - In async mode, close and the async verbs are coroutines (await them).
 
-    Use `requests` for sync execution and `httpx` for async execution.
+    Use `convention` for code style. Use `requests` and `httpx` for execution
+    via the adapter.
   properties:
     "base_url -> str": |
       Configured request origin.
+    "adapter -> str": |
+      The adapter name / mode ('requests' or 'httpx'), fixed at construction.
     "timeout -> float | None": |
       Configured network timeout.
   methods:
-    "get(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Sync GET request against base_url.
+    "get(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Issue a GET against base_url. Dual-mode by adapter.
 
       `path`: request path, normalized and joined onto base_url.
-      `kwargs`: forwarded verbatim to the `requests` call.
       `timeout`: POLLING window (None = single request, no auto raise_for_status).
       `delay`: seconds between polling attempts (default 1.0).
-      `response`: the `Response`.
+      `kwargs`: forwarded verbatim to the engine call.
+      `response`: the `Response` (sync mode), or — in async mode — a coroutine
+        resolving to an `AsyncResponse`.
 
       Algorithm:
-      1. Execute one GET through the sync _request dispatch (network timeout = the
-         constructor timeout; path normalized and joined), wrap it in a `Response`,
-         and inject a re-execute source for reload.
-      2. If `timeout` is None, return the `Response` without auto raise_for_status.
-      3. Otherwise delegate to `poll` with the `Response` and the polling window.
+      1. Resolve the full URL (join `path` onto base_url).
+      2. Build the no-arg re-exec closure from the `Adapter` execute call (sync:
+         reexec; async: arexec).
+      3. Execute the primary request (sync: call reexec; async: await arexec),
+         wrap the underlying in the mode's response type, and inject the closure.
+      4. If `timeout` is None, return the wrapper without auto raise_for_status.
+      5. Otherwise delegate to `poll` with the wrapper and the polling window.
 
       Requirements:
       - The network timeout is the constructor timeout, not the method timeout.
       - Forward `kwargs` verbatim.
+      - Sync mode returns the wrapper directly; async mode returns a coroutine
+        resolving to the wrapper.
 
-      Use `requests` for execution.
-    "post(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing a POST. Use `requests`.
-    "put(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing a PUT. Use `requests`.
-    "delete(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing a DELETE. Use `requests`.
-    "patch(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing a PATCH. Use `requests`.
-    "head(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing a HEAD. Use `requests`.
-    "options(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response": |
-      Same as get, issuing an OPTIONS. Use `requests`.
-    "aget(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Async GET request against base_url via the long-lived httpx.AsyncClient.
-
-      `path`: request path, normalized and joined onto base_url.
-      `kwargs`: forwarded verbatim to the `httpx` call.
-      `timeout`: POLLING window (None = single request, no auto raise_for_status).
-      `delay`: seconds between polling attempts (default 1.0).
-      `response`: the `AsyncResponse`.
+      Use `requests` (sync mode) / `httpx` (async mode) via the adapter.
+    "post(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing a POST.
+    "put(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing a PUT.
+    "delete(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing a DELETE.
+    "patch(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing a PATCH.
+    "head(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing a HEAD.
+    "options(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: Response | AsyncResponse": |
+      Same as get, issuing an OPTIONS.
+    "close()": |
+      Release the engine resources for the instance's mode. Dual-mode by adapter.
 
       Algorithm:
-      1. Execute one GET through the long-lived async client (network timeout =
-         the constructor timeout), wrap it in an `AsyncResponse`, and inject an
-         async re-execute source for areload.
-      2. If `timeout` is None, return the `AsyncResponse` without auto
-         raise_for_status.
-      3. Otherwise delegate to `apoll` with the `AsyncResponse` and the polling
-         window.
-
-      Requirements:
-      - Reuse the long-lived AsyncClient (created lazily on the first a* call).
-      - The network timeout is the constructor timeout.
-
-      Use `httpx` for execution.
-    "apost(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing a POST. Use `httpx`.
-    "aput(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing a PUT. Use `httpx`.
-    "adelete(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing a DELETE. Use `httpx`.
-    "apatch(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing a PATCH. Use `httpx`.
-    "ahead(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing a HEAD. Use `httpx`.
-    "aoptions(path: str, timeout: float | None, delay: float, kwargs: ..) -> response: AsyncResponse": |
-      Same as aget, issuing an OPTIONS. Use `httpx`.
-    "aclose()": |
-      Close the long-lived `httpx` AsyncClient and release its resources.
+      1. Sync mode: no-op (the requests.Session, when held by the `Session`
+         flavor, is released by garbage collection — not closed here).
+      2. Async mode: await the adapter's aclose (releases the long-lived httpx
+         AsyncClient).
 
       Requirements:
       - Idempotent; safe to call after closing.
-      - No-op when no a* call has created the client yet (lazy creation).
-      - Closes only the AsyncClient; the held requests.Session (on `Session`) is NOT
-        closed — it relies on garbage collection.
-      - Also invoked by __aexit__ (async-with).
+      - In async mode this is a coroutine (await it); also invoked by __aexit__.
+      - Do NOT close the requests.Session held by the `Session` flavor.
 
-"Client::Requests(base_url: str, timeout: float | None = None)":
+      Use `requests` / `httpx` via the adapter.
+
+"Client::Requests(base_url: str, adapter: str, timeout: float | None = None)":
   location: clients.py
   annotations: |
     Sync-flavor HTTP client — the `Requests` flavor of the two-flavor model
-    (see global annotations). Inherits every public verb, property, aclose, and the
-    async-context-manager protocol from `Client`; overrides only the sync _request
-    dispatch to open a fresh `requests` connection per sync call.
+    (mutation of `Client`). Inherits every verb, property, close, and both
+    context-manager protocols from `Client`; supplies the module-level requests
+    call (fresh connection per sync call) as the flavor's requests-engine
+    callable to the adapter.
 
-    `base_url`: origin prefixed to every request path.
-    `timeout`: NETWORK timeout (connect/read), set once here; maps to the `requests`
-    timeout and an `httpx` Timeout.
+    `base_url`: origin. `adapter`: 'requests' | 'httpx'. `timeout`: NETWORK
+    timeout (connect/read), set once here; maps to the `requests` timeout and an
+    `httpx` Timeout.
 
     Requirements:
-    - Support the async-with lifecycle; release the AsyncClient via aclose (or
-      async with) when done.
+    - Support BOTH lifecycles (sync with-statement, async with-statement).
 
-    Use `requests` for sync execution and `httpx` for async execution.
+    Use `requests` (sync) and `httpx` (async) via the adapter. Use `convention`.
 
-"Client::Session(base_url: str, timeout: float | None = None)":
+"Client::Session(base_url: str, adapter: str, timeout: float | None = None)":
   location: clients.py
   annotations: |
     Persistent-flavor HTTP client — the `Session` flavor of the two-flavor model
-    (see global annotations). Inherits every public verb, property, aclose, and the
-    async-context-manager protocol from `Client`; holds one `requests` Session across
-    sync verbs and overrides only the sync _request dispatch to route through it.
+    (mutation of `Client`). Inherits every verb, property, close, and both
+    context-manager protocols from `Client`; holds one requests.Session across
+    sync calls and supplies its bound request method as the flavor's
+    requests-engine callable to the adapter. In async mode behaves as `Requests`
+    (the shared long-lived httpx AsyncClient is owned by the adapter, not the
+    flavor).
 
-    `base_url`: origin prefixed to every request path.
-    `timeout`: NETWORK timeout (connect/read), set once here; maps to the held
-    requests.Session timeout and an `httpx` Timeout.
+    `base_url`: origin. `adapter`: 'requests' | 'httpx'. `timeout`: NETWORK
+    timeout (connect/read), set once here; maps to the held requests.Session
+    timeout and an `httpx` Timeout.
 
     Requirements:
-    - Support the async-with lifecycle; release the AsyncClient via aclose (or
-      async with) when done.
+    - Support BOTH lifecycles (sync with-statement, async with-statement).
 
-    Use `requests` for sync execution and `httpx` for async execution.
+    Use `requests` (sync) and `httpx` (async) via the adapter. Use `convention`.
 
 ---
 
 Author: Goga
-CreatedAt: 08/07/26
-Description: Клетка HTTP-клиентов (Requests/Session как мутации общего Client) — sync на requests, async a* на долгоживущем httpx.AsyncClient. Строит обёртки с инжектируемым источником переисполнения и делегирует опрос в polling. Зависит от responses и polling (DAG).
+CreatedAt: 10/08/26
+Description: Клетка HTTP-клиентов (Client/Requests/Session). Режим+движок выбираются аргументом adapter ('requests'→sync, 'httpx'→async), фиксированы на экземпляре. Единые dual-mode глаголы, close, оба context-manager-а. Строит обёртки и переисполнение (reexec/arexec) из execute-вызова адаптера, делегирует опрос в polling. Зависит от adapters, responses, polling (DAG; Architecture A сохранена).

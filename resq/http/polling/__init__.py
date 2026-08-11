@@ -1,5 +1,5 @@
-"""Polling cell facade — re-exports the polling routines."""
+"""Polling cell facade — re-exports the unified polling routine."""
 
-from .polling import apoll, poll
+from .polling import poll
 
-__all__ = ["apoll", "poll"]
+__all__ = ["poll"]

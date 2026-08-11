@@ -1,20 +1,25 @@
 # requests — synchronous HTTP
 
-**Domain.** Usage of the `requests` library for synchronous HTTP. This is the sync engine
-of the `resq` package: the `Requests` and `Session` sync facades and their methods
-(`get`, `post`, `put`, `patch`, `delete`, `head`, `options`) and `Response.reload()` are
-built on top of `requests`.
+**Domain.** Usage of the `requests` library for synchronous HTTP. This is the **sync
+engine of `resq`**, selected by `adapter='requests'`: the `Requests` and `Session`
+flavors, their unified verbs (`get`, `post`, `put`, `patch`, `delete`, `head`, `options`)
+and `Response.reload()` are built on top of `requests` in this mode.
 
 **Audience.** Anyone implementing or consuming the sync side of `resq`.
 
 `requests` is added to `pyproject.toml` under `[project.dependencies]`.
 
+In the adapter model the verb names are unified across modes — there are **no** `a*`
+verbs. Reload is `reload()` on both wrapper types (sync on `Response`, awaited on
+`AsyncResponse`). The client constructor takes the `adapter` argument; sync mode uses the
+sync `with` context manager.
+
 ---
 
 ## Two call styles
 
-`requests` exposes HTTP verbs at two levels. The distinction maps directly to the two `resq`
-sync facades.
+`requests` exposes HTTP verbs at two levels. The distinction maps directly to the two
+`resq` sync flavors.
 
 **Module-level verbs** — one new connection per call, no cookie/connection state carried
 across calls. Under the hood each call spins up a throwaway `Session`:
@@ -38,8 +43,14 @@ with requests.Session() as session:
     resp2 = session.post("https://example.com/path", json={"a": 1})
 ```
 
-RULE: in `resq`, the `Requests` facade behaves like the module-level verbs (new connection
-per call), and the `Session` facade wraps a single `requests.Session` (persistent).
+RULE: in `resq`, the `Requests` flavor supplies the module-level `requests.request` call
+(fresh connection per sync call) as its engine callable to the adapter, and the `Session`
+flavor supplies a bound `requests.Session.request` (persistent). The flavor's engine
+callable is injected into the `requests`-mode adapter; the verb names are the same
+unified set on both flavors.
+
+`requests.request(method, url, **kwargs)` is the generic dispatcher behind every verb and
+the entry point the adapter calls.
 
 ---
 
@@ -64,6 +75,9 @@ url = urljoin("https://example.com/api/", "users/42")
 
 To get predictable "append-to-base" behavior regardless of how the caller writes the path,
 normalize the base to end with `/` and strip a leading `/` from the path before joining.
+
+RULE: the owning client (not the adapter) resolves the full URL by joining the request
+path onto `base_url`; the adapter receives a resolved `url` and never knows `base_url`.
 
 ---
 
@@ -106,7 +120,9 @@ requests.get(url, timeout=(3.0, 10.0))
 ```
 
 RULE: the `resq` constructor `timeout` (the network timeout, set once on
-`Requests`/`Session`) maps to this `requests` `timeout` keyword as a single float.
+`Requests`/`Session`) maps to this `requests` `timeout` keyword as a single float. The
+adapter holds it and applies it on every execute call; per-call timeouts are NOT forwarded
+at this layer.
 
 ---
 
@@ -199,4 +215,7 @@ def execute(method, url, **kwargs):
 ```
 
 `requests.request(method, url, **kwargs)` is the generic dispatcher behind every verb — the
-same one used to replay a recipe without branching on the verb name.
+same one used to replay a recipe without branching on the verb name. The owning client
+builds a no-arg re-exec closure from the adapter's `execute` and injects it into the
+wrapper; `reload()` invokes (or, in async mode, awaits) that closure (Architecture A — the
+wrapper holds no reference to the client or the adapter).

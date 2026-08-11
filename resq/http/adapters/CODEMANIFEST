@@ -1,0 +1,154 @@
+Usages:
+  convention: .goga/usages/conventions.md
+  requests: .goga/usages/cooks/requests.md
+  httpx: .goga/usages/cooks/httpx.md
+
+Annotations: |
+  Use `convention` for code style, Google-style docstrings, relative imports,
+  the mirrored test structure, and Python 3.10+ typing (typing.Optional per
+  UP045). pydantic is NOT used in this cell.
+
+  LEAF CELL — no Imports. Engine-binding for the FIXED set {requests, httpx};
+  the set is encoded as adapter subtypes (`RequestsAdapter`, `HttpxAdapter`),
+  NOT a registry — there is no factory routine and no extension point. This cell
+  constructs no wrapper and references no client or response type: it provides the
+  engine execute call and the long-lived resource lifecycle only. The owning
+  client builds the response wrapper and the no-arg re-exec closure from this
+  cell's execute call (Architecture A — the wrapper still holds no reference to
+  the client or the adapter).
+
+  Two modes split at the TYPE level: `RequestsAdapter` (sync, requests engine)
+  and `HttpxAdapter` (async, httpx AsyncClient) mutate from a shared `Adapter`
+  base. Subtype selection by the adapter string happens in the owning client;
+  this cell exposes no selection routine.
+
+  The constructor timeout is the NETWORK timeout (connect/read), set once on
+  the engine; it is NOT a polling window.
+
+---
+
+"Adapter(timeout: float | None = None)":
+  location: adapters.py
+  annotations: |
+    Shared base and contract root of the two-mode adapter model — owns the
+    network timeout and the common mode-introspection surface. The two modes
+    (`RequestsAdapter`, `HttpxAdapter`) mutate from it and differ only in the
+    engine execute call and the lifecycle they own.
+
+    `Adapter` is NOT part of any public facade — it is not re-exported via
+    __all__. Consumers construct Requests or Session and pass the adapter
+    string; the owning client selects and constructs the matching adapter
+    subtype. It is public only so the shared `timeout` and the mode-introspection
+    properties are declared where the extractor reads them.
+
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the
+    `requests` timeout and an `httpx` Timeout. None leaves the engine at its
+    default.
+
+    Requirements:
+    - Hold the network timeout for the engine calls.
+
+    Use `convention` for code style.
+  properties:
+    "name -> str": |
+      The adapter name — 'requests' or 'httpx' (the bound mode/engine).
+    "is_async -> bool": |
+      True when the bound mode is async (httpx). The owning client reads this to
+      choose the wrapper type (Response vs AsyncResponse), the
+      context-manager protocol, and sync-vs-async dispatch.
+
+"Adapter::RequestsAdapter(timeout: float | None, sync_engine: Callable)":
+  location: adapters.py
+  annotations: |
+    Sync-mode adapter — the requests engine binding (the `RequestsAdapter`
+    mutation of `Adapter`). Executes requests through `sync_engine` with the
+    network timeout; owns no long-lived resource.
+
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to the
+    `requests` timeout.
+    `sync_engine`: the requests-engine callable injected by the owning client —
+      the module-level requests call for a fresh connection per call, or a bound
+      requests.Session request for a persistent pool. Ignored by the async mode.
+
+    Requirements:
+    - Stateless across calls w.r.t. the engine connection — the connection
+      policy is fully captured by `sync_engine`.
+
+    Use `requests` for sync execution. Use `convention` for code style.
+  methods:
+    "execute(method: str, url: str, kwargs: ..) -> response: requests.Response": |
+      Execute one sync request through sync_engine with the network timeout and
+      return a fresh underlying requests.Response.
+
+      `method`: HTTP verb of the request.
+      `url`: resolved URL (the owning client joins it onto its base_url).
+      `kwargs`: forwarded verbatim to the `requests` call.
+
+      Algorithm:
+      1. Call sync_engine with `method`, `url`, the constructor network
+         timeout, and `kwargs`; return the resulting underlying response.
+
+      Requirements:
+      - Use the constructor network timeout, not any per-call timeout.
+      - Forward `kwargs` verbatim.
+
+      Use `requests` for execution.
+
+"Adapter::HttpxAdapter(timeout: float | None)":
+  location: adapters.py
+  annotations: |
+    Async-mode adapter — the httpx engine binding (the `HttpxAdapter` mutation of
+    `Adapter`). Executes requests through a lazily-created, long-lived AsyncClient
+    of the `httpx` engine (shared across all calls and reload) with the network
+    timeout; owns that AsyncClient and releases it via aclose.
+
+    `timeout`: NETWORK timeout (connect/read), set once here; maps to an
+    `httpx` Timeout (<float>).
+
+    Requirements:
+    - Reuse the long-lived AsyncClient (created lazily on the first call);
+      release it via aclose or the owning client's async-context-manager.
+
+    Use `httpx` for async execution. Use `convention` for code style.
+  methods:
+    "aexecute(method: str, url: str, kwargs: ..) -> response: httpx.Response": |
+      Execute one async request through the long-lived AsyncClient with the
+      network timeout and return a fresh underlying httpx.Response.
+
+      `method`: HTTP verb of the request.
+      `url`: resolved URL (the owning client joins it onto its base_url).
+      `kwargs`: forwarded verbatim to the `httpx` call.
+
+      Algorithm:
+      1. Create the long-lived AsyncClient lazily on the first call (timeout =
+         httpx.Timeout of the constructor network timeout; the owning client
+         passes resolved URLs).
+      2. Await the client's request with `method`, `url`, and `kwargs`; return
+         the resulting underlying response.
+
+      Requirements:
+      - Reuse the same long-lived AsyncClient across calls.
+      - Use the constructor network timeout.
+
+      Use `httpx` for execution.
+    "aclose()": |
+      Close the long-lived `httpx` AsyncClient and release its resources.
+
+      Requirements:
+      - Idempotent; safe to call after closing.
+      - No-op when no call has created the client yet (lazy creation).
+      - Closes only the AsyncClient.
+      - Also invoked by the owning client's __aexit__ (async-with).
+
+      Use `httpx` for execution.
+
+---
+
+Author: Goga
+CreatedAt: 10/08/26
+Description: |
+  Листовая клетка engine-binding (Adapter/RequestsAdapter/HttpxAdapter) для
+  фиксированного множества {requests, httpx}: execute (sync) / aexecute (async) +
+  lifecycle долгоживущего httpx.AsyncClient. Не строит обёрток и не ссылается на
+  клиент/ответы; переисполнение строит клиент из execute-вызова адаптера
+  (Architecture A).

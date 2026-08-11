@@ -1,14 +1,21 @@
 # httpx — asynchronous HTTP
 
-**Domain.** Usage of the `httpx` library for asynchronous HTTP. This is the async engine of
-the `resq` package: the `a*`-prefixed methods (`aget`, `apost`, `aput`, `apatch`, `adelete`,
-`ahead`, `aoptions`) on the `Requests` and `Session` facades, and `AsyncResponse.areload()`,
-are built on top of `httpx.AsyncClient`.
+**Domain.** Usage of the `httpx` library for asynchronous HTTP. This is the **async
+engine of `resq`**, selected by `adapter='httpx'`: the unified verbs
+(`get`, `post`, `put`, `patch`, `delete`, `head`, `options`) on the `Requests` and
+`Session` flavors and `AsyncResponse.reload()` are built on top of `httpx.AsyncClient` in
+this mode.
 
 **Audience.** Anyone implementing or consuming the async side of `resq`.
 
 `httpx` is added to `pyproject.toml` under `[project.dependencies]`. Verified against
 `httpx` 0.28.
+
+In the adapter model the verb names are unified across modes — there are **no** `a*` verbs;
+the same verb returns a coroutine that resolves to the wrapper (await it). Reload is
+`reload()` on both wrapper types (sync on `Response`, awaited on `AsyncResponse`). The
+client constructor takes the `adapter` argument; async mode uses the `async with`
+context manager (or `await client.close()`).
 
 ---
 
@@ -32,9 +39,11 @@ finally:
     await client.aclose()
 ```
 
-RULE: in `resq`, the `Session` facade owns a long-lived `AsyncClient` and must expose a way
-to close it (`aclose`); the `Requests` facade may create a short-lived client per `a*` call
-or hold one lazily — either way, it must not leak an unclosed client.
+RULE: in the adapter model, the httpx-mode adapter owns ONE lazily-created, long-lived
+`httpx.AsyncClient` shared by both flavors and by every async call and reload. The adapter
+releases it via its `aclose()`, which the owning client exposes as `close()` (also invoked
+by `__aexit__`, i.e. `async with`). `close()` is idempotent and a no-op when no call has
+created the client yet (lazy creation).
 
 `AsyncClient` constructor defaults worth knowing:
 
@@ -61,7 +70,8 @@ await client.get("https://other/y")# -> https://other/y               (absolute 
 RULE: leading `/` on the path does **not** discard the base path in `httpx` 0.28 — relative
 paths are appended to the base. Use this when relying on `base_url` directly; normalize
 paths yourself if the same path string must behave identically across the sync and async
-engines.
+engines. In `resq` the owning client (not the adapter) resolves the full URL by joining the
+request path onto `base_url` and passes a resolved `url` to the adapter's `aexecute`.
 
 ---
 
@@ -85,6 +95,7 @@ await client.get(
 ```
 
 A `timeout` passed on a single call overrides the client-level default for that call only.
+The adapter does NOT forward per-call timeouts — the constructor network timeout applies.
 
 ---
 
@@ -107,8 +118,8 @@ httpx.Timeout(connect=2.0, read=3.0, write=4.0, pool=5.0)
 ```
 
 RULE: the `resq` constructor `timeout` (the network timeout, set once on
-`Requests`/`Session`) maps to `httpx.Timeout(<float>)`. Construct the client with
-`timeout=httpx.Timeout(<float>)`.
+`Requests`/`Session`) maps to `httpx.Timeout(<float>)`. The adapter constructs the
+long-lived client with `timeout=httpx.Timeout(<float>)`.
 
 ---
 
@@ -191,7 +202,7 @@ except httpx.RequestError:
 
 ## Pattern: async reload and lifecycle
 
-To support `AsyncResponse.areload()` (re-await the original request), the async response
+To support `AsyncResponse.reload()` (re-await the original request), the async response
 must remember enough to replay the call against the same `AsyncClient`:
 
 ```python
@@ -199,9 +210,13 @@ import httpx
 
 # recipe = (method, url, kwargs); replay against the same client:
 resp = await client.request(method, url, **kwargs)
-# areload = await client.request(stored_method, stored_url, **stored_kwargs) and overwrite
+# reload = await client.request(stored_method, stored_url, **stored_kwargs) and overwrite
 ```
 
 `client.request(method, url, **kwargs)` is the generic dispatcher behind every verb — the
-one used to replay a recipe without branching on the verb name. Because the client owns the
-connection pool, reload must reuse the same client instance the original call used.
+one used to replay a recipe without branching on the verb name. Because the long-lived
+client owns the connection pool, reload must reuse the same client instance the original
+call used. The owning client builds a no-arg async re-exec closure from the adapter's
+`aexecute` and injects it into the wrapper; `reload()` awaits that closure (Architecture A
+— the wrapper holds no reference to the client or the adapter). The same long-lived client
+is reused across calls and reloads; release it via `await client.close()` or `async with`.

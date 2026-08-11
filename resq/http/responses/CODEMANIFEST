@@ -9,12 +9,13 @@ Annotations: |
   UP045). pydantic is NOT used in this cell.
 
   LEAF CELL — no Imports. Response wrappers hold no reference to any client type.
-  The owning client injects a re-execute source at construction so reload/areload
-  can replay the stored recipe; the wrappers never import the clients package.
+  The owning client injects a re-execute source at construction so reload can
+  replay the stored recipe; the wrappers never import the clients package.
 
   Two engines share one unified attribute surface: sync `Response` over a
-  `requests` response, async `AsyncResponse` over an `httpx` response. End users
-  never construct a wrapper themselves — they receive one from a client verb.
+  `requests` response, async `AsyncResponse` over an `httpx` response. Both
+  expose the same reload name (sync on `Response`, awaited on `AsyncResponse`).
+  End users never construct a wrapper themselves — they receive one from a client verb.
 
 ---
 
@@ -30,8 +31,7 @@ Annotations: |
     `reexec`: no-arg re-execute source injected by the owning client; invoking it
       (sync) / awaiting it (async) replays the stored recipe through the client's
       engine with the client's network timeout and returns a fresh underlying
-      response. Kept for reload/areload so the wrapper never references a client
-      type.
+      response. Kept for reload so the wrapper never references a client type.
 
     Requirements:
     - Store the recipe and `reexec` so subclasses can replay the request.
@@ -42,7 +42,7 @@ Annotations: |
     Constraints:
     - Proxy through the explicit declared properties only — no dynamic attribute
       fallback.
-    - Do not re-execute at this level; subclasses own reload/areload.
+    - Do not re-execute at this level; subclasses own reload.
   properties:
     "status_code -> int": |
       HTTP status code of the underlying response.
@@ -96,13 +96,13 @@ Annotations: |
   location: responses.py
   annotations: |
     Async wrapper over an httpx.Response. Inherits the proxy contract from
-    `BaseResponse`; adds in-place areload driven by the injected async re-execute
+    `BaseResponse`; adds in-place reload driven by the injected async re-execute
     source.
 
     Requirements:
     - The wrapped underlying is an httpx.Response.
   methods:
-    "areload()": |
+    "reload()": |
       Re-await the original request via the injected async re-execute source and
       replace the wrapped httpx.Response in place, preserving object identity.
 
@@ -123,5 +123,5 @@ Annotations: |
 ---
 
 Author: Goga
-CreatedAt: 08/07/26
-Description: Листовая клетка-обёртки ответов (BaseResponse/Response/AsyncResponse) с in-place reload/areload. Не имеет Imports — переисполнение инжектируется клиентом (dependency inversion), что разрывает цикл импортов.
+CreatedAt: 10/08/26
+Description: Листовая клетка-обёртки ответов (BaseResponse/Response/AsyncResponse) с in-place reload (единое имя на обоих wrapper-классах; async reload ожидается). Не имеет Imports — переисполнение инжектируется клиентом (dependency inversion), что разрывает цикл импортов.

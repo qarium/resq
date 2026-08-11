@@ -11,32 +11,36 @@ Usages:
 
 Annotations: |
   Use `convention` for code style, Google-style docstrings, relative imports,
-  mirrored tests, and Python 3.10+ typing (typing.Optional per UP045). pydantic
-  is NOT used in this cell.
+  the mirrored test structure, and Python 3.10+ typing (typing.Optional per
+  UP045). pydantic is NOT used in this cell.
 
-  Polling loops operate on an ALREADY-BUILT response wrapper: call raise_for_status,
-  and on a bad status retry through the wrapper's own reload/areload until success
-  or until the timeout window elapses. This cell never references any client type —
-  the owning client builds the primary response and passes it in.
+  The polling loop operates on an ALREADY-BUILT response wrapper: call
+  raise_for_status, and on a bad status retry through the wrapper's own reload
+  until success or until the timeout window elapses. This cell never references
+  any client or adapter type — the owning client builds the primary response and
+  passes it in.
 
-  Sync semantics follow `requests`, async follow `httpx`.
+  One unified `poll` routine covers both modes: the mode is fixed by the
+  wrapper's type — a `Response` runs a sync loop (reload), an `AsyncResponse`
+  runs an async loop (await reload, await the call). Sync semantics follow
+  `requests`, async follow `httpx`.
 
 ---
 
-"poll(response: Response, timeout: float | None, delay: float) -> response: Response":
+"poll(response: Response | AsyncResponse, timeout: float | None, delay: float) -> response: Response | AsyncResponse":
   location: polling.py
   annotations: |
-    Synchronous polling loop over an existing `Response`: call raise_for_status,
-    and on a bad status retry after `delay` until success or until the `timeout`
-    window elapses.
+    Unified polling loop over an already-built wrapper. Mode is fixed by the
+    wrapper's type: a `Response` runs a sync loop; an `AsyncResponse` runs an
+    async loop (the call must then be awaited).
 
-    `response`: the already-constructed `Response` to poll (built and passed by
-      the owning client).
+    `response`: the already-constructed wrapper to poll (built and passed by the
+      owning client).
     `timeout`: polling window in seconds (None disables polling).
     `delay`: seconds to wait between attempts (default 1.0; ignored when
       `timeout` is None).
-    `response` (return): the `Response` with a success status when the window is
-      satisfied; otherwise the LAST (bad-status) `Response` — no exception.
+    `response` (return): the wrapper with a success status when the window is
+      satisfied; otherwise the LAST (bad-status) wrapper — no exception.
 
     Algorithm:
     1. If `timeout` is None, return `response` without calling raise_for_status.
@@ -44,59 +48,26 @@ Annotations: |
     3. Loop: call raise_for_status on `response`; on success (no HTTP error
        raised) return `response`.
     4. On an engine HTTP error: if the deadline has elapsed, RETURN the last
-       (bad-status) `response` (no exception); otherwise sleep `delay`, call
-       reload on the same `response`, and repeat.
+       (bad-status) `response` (no exception); otherwise wait `delay` (sync
+       sleep / async sleep), call reload on the same `response` (awaited for an
+       `AsyncResponse`), and repeat.
 
     Requirements:
     - Measure the deadline from the start of the call, not per attempt.
     - Retry via the wrapper's own reload (in-place); reuse the same object.
     - On window expiry, return the last `response` (do not raise).
+    - Dispatch the mode by the wrapper's type: sync loop + reload for
+      `Response`; async loop + await reload for `AsyncResponse`.
 
     Constraints:
-    - Retry only on a bad-status HTTP error from `requests`; let transport-level
-      failures (connection/timeout/TLS — the `requests` RequestException family)
-      propagate immediately, do not retry them.
+    - Retry only on a bad-status HTTP error from the engine; let transport-level
+      failures (the `requests` RequestException family / the `httpx` RequestError
+      family) propagate immediately, do not retry them.
     - Do not raise on window expiry; return the last response.
-    - Do not import or reference any client type.
-
-"apoll(response: AsyncResponse, timeout: float | None, delay: float) -> response: AsyncResponse":
-  location: polling.py
-  annotations: |
-    Asynchronous polling loop over an existing `AsyncResponse` — the async
-    counterpart of poll.
-
-    `response`: the already-constructed `AsyncResponse` to poll (built and passed
-      by the owning client).
-    `timeout`: polling window in seconds (None disables polling).
-    `delay`: seconds to await between attempts (default 1.0; ignored when
-      `timeout` is None).
-    `response` (return): the `AsyncResponse` with a success status when the window
-      is satisfied; otherwise the LAST (bad-status) `AsyncResponse` — no
-      exception.
-
-    Algorithm:
-    1. If `timeout` is None, return `response` without calling raise_for_status.
-    2. Otherwise set a deadline measured from the call start (`timeout`).
-    3. Loop: call raise_for_status on `response`; on success (no HTTP error
-       raised) return `response`.
-    4. On an engine HTTP error: if the deadline has elapsed, RETURN the last
-       (bad-status) `response` (no exception); otherwise await `delay` (async
-       sleep), call areload on the same `response`, and repeat.
-
-    Requirements:
-    - Measure the deadline from the start of the call, not per attempt.
-    - Retry via the wrapper's own areload (in-place); reuse the same object.
-    - On window expiry, return the last `response` (do not raise).
-
-    Constraints:
-    - Retry only on a bad-status HTTP status error from `httpx`; let
-      transport-level failures (the `httpx` RequestError family) propagate
-      immediately, do not retry them.
-    - Do not raise on window expiry; return the last response.
-    - Do not import or reference any client type.
+    - Do not import or reference any client or adapter type.
 
 ---
 
 Author: Goga
-CreatedAt: 08/07/26
-Description: Циклы опроса poll/apoll работают поверх уже построенной обёртки ответа (raise_for_status → reload). Зависит только от responses — не ссылается на клиентов, что разрывает цикл импортов.
+CreatedAt: 10/08/26
+Description: Единая процедура poll поверх уже построенной обёртки ответа (raise_for_status → reload). Режим определяется типом обёртки (Response→sync, AsyncResponse→async). Зависит только от responses — не ссылается на клиентов/адаптеры, что разрывает цикл импортов.
