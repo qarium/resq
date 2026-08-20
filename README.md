@@ -24,4 +24,4 @@ async with Session("https://api.example.com", adapter="httpx", timeout=5) as cli
 A method-level `timeout` turns a verb into a polling loop; `r.reload()` re-runs a
 request in place.
 
-Documentation: `docs/` (MkDocs — `mkdocs serve`).
+Full documentation: <https://qarium.github.io/resq/>.

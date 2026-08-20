@@ -2,31 +2,51 @@ site_name: resq
 site_description: >-
   Dual-mode HTTP client library — one verb surface, adapter-selected engines
   (requests for sync, httpx for async), polling windows and in-place reload.
+site_url: https://qarium.github.io/resq/
 repo_url: https://github.com/qarium/resq
 repo_name: qarium/resq
+edit_uri: edit/0.0.x/docs/
 
 theme:
   name: material
+  custom_dir: docs/overrides
+  logo: https://avatars.githubusercontent.com/u/262344922?s=200&v=4
   features:
-    - navigation.sections
-    - navigation.top
+    - navigation.tabs
+    - navigation.tracking
+    - toc.follow
+    - search.highlight
+    - search.suggest
     - content.code.copy
   palette:
     - scheme: default
+      primary: custom
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
+        media: "(prefers-color-scheme: light)"
     - scheme: slate
+      primary: custom
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+        media: "(prefers-color-scheme: dark)"
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
   - toc:
       permalink: true
-  - pymdownx.highlight
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.mark
 
 # Goga workflow artifacts that live under docs/ but are not user documentation.
 exclude_docs: |
@@ -34,6 +54,7 @@ exclude_docs: |
   design/*
   plans/*
   tasks/*
+  overrides/*
 
 strict: true
 
