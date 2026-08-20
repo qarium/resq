@@ -8,6 +8,8 @@ Imports:
       - Adapter
       - RequestsAdapter
       - HttpxAdapter
+    Usages:
+      - adapters
     From: resq/http/adapters
   - Types:
       - Response
@@ -22,6 +24,8 @@ Annotations: |
   the mirrored test structure, and Python 3.10+ typing (typing.Optional per
   UP045). pydantic is NOT used in this cell.
 
+  Use `adapters` for the engine-binding contract consumed by the client.
+
   Two client flavors (`Requests` / `Session`) mutate from a shared `Client`
   base. The mode (sync/async) and the engine are selected by the adapter
   argument ('requests' → sync via the `requests` engine; 'httpx' → async via the
@@ -32,15 +36,14 @@ Annotations: |
   for the async mode) live on `Client`; each flavor only supplies the
   requests-engine callable (the module-level requests call for `Requests`, a
   held requests.Session for `Session`) — all public verbs and properties are
-  declared directly on `Client` (the extractor does not follow inheritance).
+  declared directly on `Client`.
 
   Each verb resolves the URL, builds the no-arg re-exec closure from the
   `Adapter` execute call (reexec for the sync mode, arexec for the async mode),
   calls it once for the primary request, wraps the underlying in the mode's
   response type (`Response` / `AsyncResponse`) injecting the closure, and — when
   a method-level timeout is set — delegates the polling window to `poll`. The
-  wrapper and `poll` hold no reference to the client or the adapter (Architecture
-  A preserved).
+  wrapper and `poll` hold no reference to the client or the adapter.
 
   The same verb name is dual-mode: when adapter is 'requests' it returns the
   `Response` directly (sync); when adapter is 'httpx' it returns a coroutine
@@ -62,8 +65,8 @@ Annotations: |
     only in the requests-engine callable they supply to the adapter.
 
     `Client` is NOT part of the cell facade — it is not re-exported via __all__;
-    consumers construct `Requests` or `Session`. It is public only so the shared
-    verbs and properties are declared where the extractor reads them.
+    consumers construct `Requests` or `Session`. It is public so the shared
+    verbs and properties are declared directly on it.
 
     `base_url`: origin prefixed to every request path.
     `adapter`: engine+mode binding — 'requests' (sync) or 'httpx' (async); any

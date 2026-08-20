@@ -3,7 +3,7 @@
 **Domain.** The internal engine-binding that maps the `adapter` argument
 (`'requests'` / `'httpx'`) to a concrete HTTP engine and its lifecycle.
 
-**Audience.** Implementers of the `clients` cell — the only consumer of this cell. End
+**Audience.** Implementers of the owning client — the only consumers of this cell. End
 users never import or construct an adapter; they pass the `adapter` string to
 `Requests` / `Session`.
 

@@ -10,7 +10,7 @@ Annotations: |
 
   LEAF CELL — no Imports. Response wrappers hold no reference to any client type.
   The owning client injects a re-execute source at construction so reload can
-  replay the stored recipe; the wrappers never import the clients package.
+  replay the stored recipe; the wrappers never import any client module.
 
   Two engines share one unified attribute surface: sync `Response` over a
   `requests` response, async `AsyncResponse` over an `httpx` response. Both

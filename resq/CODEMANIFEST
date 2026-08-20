@@ -5,18 +5,21 @@ Imports:
   - Types:
       - Requests
       - Session
+    Usages:
+      - overview
     From: resq/http
 
 Annotations: |
   Facade cell — public entry point of the resq package. Adds no logic: only
-  re-exports `Requests` and `Session` (the HTTP clients from resq/http) via the
-  embeddings below; resq/__init__.py performs the relative re-exports.
+  re-exports `Requests` and `Session` (the HTTP clients) via the embeddings
+  below; the package initializer performs the relative re-exports.
 
   The response wrappers (BaseResponse / Response / AsyncResponse) and the polling
-  routine (poll) are NOT re-exported here — reach them through resq/http when
-  their types are needed directly.
+  routine (poll) are NOT re-exported here — reach them through the aggregated
+  HTTP submodule when their types are needed directly.
 
   Use `convention` for the public surface and the relative-import re-export style.
+  Use `overview` for the aggregated HTTP surface and its import locations.
 
 ---
 

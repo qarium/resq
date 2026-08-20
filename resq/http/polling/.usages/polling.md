@@ -5,7 +5,7 @@ already-built response wrapper until a success status arrives.
 
 **Audience.** Consumers who build a response wrapper themselves (or hold one from a
 single, non-polling request) and want to poll it as a separate step rather than through
-a client verb's `timeout`.
+a client's request-method `timeout`.
 
 `poll` operates on an **already-built** wrapper — it never issues the first request and
 never references a client or adapter. It calls `raise_for_status`, and on a bad status
@@ -52,8 +52,8 @@ async with Requests("https://api.example.com", adapter="httpx", timeout=5) as cl
 
 ## When you do not need poll directly
 
-Most consumers never call `poll` themselves: passing a `timeout` to a client verb makes
-the verb poll internally and return the already-polled wrapper.
+Most consumers never call `poll` themselves: passing a `timeout` to a client's request
+method makes it poll internally and return the already-polled wrapper.
 
 ```python
 r = client.get("/job/42", timeout=30, delay=2)   # the verb polls for you

@@ -14,8 +14,8 @@ Annotations: |
   constructs no wrapper and references no client or response type: it provides the
   engine execute call and the long-lived resource lifecycle only. The owning
   client builds the response wrapper and the no-arg re-exec closure from this
-  cell's execute call (Architecture A — the wrapper still holds no reference to
-  the client or the adapter).
+  cell's execute call; the wrapper still holds no reference to the client or
+  the adapter.
 
   Two modes split at the TYPE level: `RequestsAdapter` (sync, requests engine)
   and `HttpxAdapter` (async, httpx AsyncClient) mutate from a shared `Adapter`
@@ -36,10 +36,10 @@ Annotations: |
     engine execute call and the lifecycle they own.
 
     `Adapter` is NOT part of any public facade — it is not re-exported via
-    __all__. Consumers construct Requests or Session and pass the adapter
+    __all__. Consumers construct a client flavor and pass the adapter
     string; the owning client selects and constructs the matching adapter
-    subtype. It is public only so the shared `timeout` and the mode-introspection
-    properties are declared where the extractor reads them.
+    subtype. It is public so the shared `timeout` and the mode-introspection
+    properties are declared directly on it.
 
     `timeout`: NETWORK timeout (connect/read), set once here; maps to the
     `requests` timeout and an `httpx` Timeout. None leaves the engine at its

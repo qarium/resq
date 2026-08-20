@@ -2,6 +2,9 @@ Imports:
   - Types:
       - Response
       - AsyncResponse
+    Usages:
+      - response
+      - reload
     From: resq/http/responses
 
 Usages:
@@ -13,6 +16,9 @@ Annotations: |
   Use `convention` for code style, Google-style docstrings, relative imports,
   the mirrored test structure, and Python 3.10+ typing (typing.Optional per
   UP045). pydantic is NOT used in this cell.
+
+  Use `response` for the wrapper attribute surface; use `reload` for the
+  in-place re-execution semantics.
 
   The polling loop operates on an ALREADY-BUILT response wrapper: call
   raise_for_status, and on a bad status retry through the wrapper's own reload

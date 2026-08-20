@@ -5,6 +5,8 @@ Imports:
   - Types:
       - Requests
       - Session
+    Usages:
+      - clients
     From: resq/http/clients
   - Types:
       - Response
@@ -12,16 +14,20 @@ Imports:
     From: resq/http/responses
   - Types:
       - poll
+    Usages:
+      - polling
     From: resq/http/polling
 
 Annotations: |
   Use `convention` for the public surface and the relative-import re-export style.
 
-  Aggregation cell — declares no types of its own. Re-exports the public surface
-  from the child cells: `Requests` and `Session` from clients, `Response` and
-  `AsyncResponse` from responses, and `poll` from polling (unified — the former
-  apoll is gone). Clients take the adapter argument selecting sync vs async
-  mode.
+  Aggregation cell — declares no types of its own. Re-exports the imported public
+  surface via the embeddings below: `Requests`, `Session`, `Response`,
+  `AsyncResponse`, and `poll`. Clients take the adapter argument selecting sync
+  vs async mode.
+
+  Use `clients` for client construction and the unified verb semantics.
+  Use `polling` for driving a polling loop directly over a pre-built wrapper.
 
 ---
 
