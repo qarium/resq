@@ -140,17 +140,17 @@ class Client:
 
     @property
     def base_url(self) -> str:
-        """str: the base URL prefixing every request path."""
+        """The base URL prefixing every request path."""
         return self._base_url
 
     @property
     def adapter(self) -> str:
-        """str: the adapter name / mode (``'requests'`` or ``'httpx'``), fixed at construction."""
+        """The adapter name / mode (``'requests'`` or ``'httpx'``), fixed at construction."""
         return self._adapter.name
 
     @property
     def timeout(self) -> float | None:
-        """float | None: the NETWORK timeout (connect/read) set on the engine."""
+        """The NETWORK timeout (connect/read) set on the engine."""
         return self._timeout
 
     def _verb(self, method: str, path: str, timeout: float | None, delay: float, kwargs: dict[str, Any]) -> Response:
@@ -179,8 +179,10 @@ class Client:
 
         resp = Response(method, path, kwargs, reexec)
         resp._underlying = reexec()  # primary
+
         if timeout is None:
             return resp
+
         return poll(resp, timeout, delay)
 
     async def _averb(
@@ -216,48 +218,127 @@ class Client:
 
         resp = AsyncResponse(method, path, kwargs, arexec)
         resp._underlying = await arexec()  # primary
+
         if timeout is None:
             return resp
+
         return await poll(resp, timeout, delay)
 
     def get(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``GET``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``GET``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("GET", path, timeout, delay, kwargs)
         return self._verb("GET", path, timeout, delay, kwargs)
 
     def post(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``POST``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``POST``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("POST", path, timeout, delay, kwargs)
         return self._verb("POST", path, timeout, delay, kwargs)
 
     def put(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``PUT``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``PUT``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("PUT", path, timeout, delay, kwargs)
         return self._verb("PUT", path, timeout, delay, kwargs)
 
     def delete(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``DELETE``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``DELETE``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("DELETE", path, timeout, delay, kwargs)
         return self._verb("DELETE", path, timeout, delay, kwargs)
 
     def patch(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``PATCH``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``PATCH``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("PATCH", path, timeout, delay, kwargs)
         return self._verb("PATCH", path, timeout, delay, kwargs)
 
     def head(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue a ``HEAD``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue a ``HEAD``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("HEAD", path, timeout, delay, kwargs)
         return self._verb("HEAD", path, timeout, delay, kwargs)
 
     def options(self, path, timeout=None, delay=1.0, **kwargs):
-        """Issue an ``OPTIONS``; single request when ``timeout`` is None, else poll. Dual-mode by adapter."""
+        """Issue an ``OPTIONS``; single request when ``timeout`` is None, else poll. Dual-mode by adapter.
+
+        Args:
+            path: the request path to execute.
+            timeout: the POLLING window (``None`` = single request).
+            delay: seconds between polling attempts (ignored when ``timeout is None``).
+            **kwargs: forwarded verbatim to the adapter's execute call.
+
+        Returns:
+            The sync ``Response`` wrapper; in async mode, a coroutine resolving to
+            the ``AsyncResponse`` wrapper.
+        """
         if self._adapter.is_async:
             return self._averb("OPTIONS", path, timeout, delay, kwargs)
         return self._verb("OPTIONS", path, timeout, delay, kwargs)
@@ -289,6 +370,7 @@ class Client:
         # one instance = one mode.
         if self._adapter.is_async:
             raise TypeError("use 'async with' for an httpx-mode client")
+
         self.close()
 
     async def __aenter__(self) -> Client:
@@ -351,6 +433,7 @@ class Session(Client):
         # super().__init__ so the base can capture the engine callable.
         if adapter == "requests":
             self._session = requests.Session()
+
         super().__init__(base_url, adapter, timeout)
 
     def _sync_engine(self) -> Callable[..., Any]:

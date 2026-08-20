@@ -16,9 +16,9 @@ update. Both wrapper types expose the same name `reload`: sync on `Response`, as
 ## Sync reload
 
 ```python
-r = client.get("/job/42")        # adapter='requests'
+r = client.get("/job/42")  # adapter='requests'
 ...
-r.reload()                       # same object, refreshed content
+r.reload()  # same object, refreshed content
 print(r.status_code)
 ```
 
@@ -29,7 +29,7 @@ print(r.status_code)
 ```python
 r = await client.get("/job/42")  # adapter='httpx'
 ...
-await r.reload()                 # same object, refreshed content
+await r.reload()  # same object, refreshed content
 ```
 
 ---
@@ -41,7 +41,7 @@ Because identity is preserved, a stored reference stays valid:
 ```python
 cache["job-42"] = client.get("/job/42")
 ...
-cache["job-42"].reload()   # the cached entry is updated, no reassignment needed
+cache["job-42"].reload()  # the cached entry is updated, no reassignment needed
 ```
 
 ---

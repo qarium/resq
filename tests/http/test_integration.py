@@ -37,7 +37,7 @@ import resq.http.polling.polling as polling_module
 import resq.http.responses.responses as responses_module
 from resq.http import AsyncResponse, BaseResponse, Requests, Response, Session, poll
 
-from tests.http.conftest import FakeUnderlying
+from .conftest import FakeUnderlying
 
 BASE_URL = "https://api.example.com"
 FINAL_URL = "https://api.example.com/health"

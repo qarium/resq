@@ -5,8 +5,7 @@ description: Constructing the resq HTTP clients and issuing sync and async reque
 # Clients & requests
 
 This chapter covers constructing the `resq` HTTP clients and issuing sync and async
-requests. The clients cell is the source of the two client flavors: `Requests` and
-`Session`.
+requests. The two client flavors are `Requests` and `Session`.
 
 `resq` exposes two clients with the SAME unified verb surface; the mode (sync/async) and
 engine are chosen by the `adapter` argument:
@@ -16,16 +15,20 @@ engine are chosen by the `adapter` argument:
 - `Session` — one persistent `requests.Session` reused across sync calls (shared pool and
   cookie jar).
 
-Both flavors share the same long-lived `httpx.AsyncClient` in async mode (owned
-internally); release it via `async with` (preferred) or `await client.close()`.
+In async mode both flavors behave identically: each instance owns one long-lived
+`httpx.AsyncClient` (held internally), shared across that instance's calls and reloads;
+release it via `async with` (preferred) or `await client.close()`.
 
 ---
 
 ## Construction
 
-The constructor `timeout` is the **network** timeout (connect/read), set once on the
-engine. It is NOT the polling window. `adapter` selects the mode+engine and is fixed per
-instance.
+!!! warning "Two different timeouts"
+
+    The constructor `timeout` is the **network** timeout (connect/read), set once on the
+    engine. It is NOT the polling window.
+
+`adapter` selects the mode+engine and is fixed per instance.
 
 ```python
 from resq import Requests, Session
@@ -34,7 +37,8 @@ client = Requests("https://api.example.com", adapter="requests", timeout=5)
 async_client = Session("https://api.example.com", adapter="httpx", timeout=5)
 ```
 
-Valid `adapter` values are exactly `'requests'` and `'httpx'`; any other value raises.
+Valid `adapter` values are exactly `'requests'` and `'httpx'`; any other value raises
+`ValueError` (before an adapter is built).
 
 ## Sync requests (adapter='requests')
 
@@ -73,7 +77,7 @@ Release the async engine via `async with` (preferred) or `await client.close()`.
 - Async mode: `async with`, or `await client.close()` — releases the long-lived
   `httpx.AsyncClient` (idempotent; a coroutine).
 
-## Preconditions
+## Behavior & preconditions
 
 - One instance = one mode, fixed at construction by `adapter`.
 - Paths are joined onto `base_url`; a leading `/` on the path is normalized so the

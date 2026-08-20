@@ -42,7 +42,7 @@ cache["job-42"] = client.get("/job/42")
 cache["job-42"].reload()   # the cached entry is updated, no reassignment needed
 ```
 
-## Preconditions
+## Behavior & preconditions
 
 - `reload` reuses the owning client's engine and network timeout; the original
   forwarded arguments are replayed verbatim.

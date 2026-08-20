@@ -19,15 +19,17 @@ from resq import Requests, Session
 - `Session` — HTTP client with a persistent sync connection reused across calls.
 
 The response wrappers (`Response` / `AsyncResponse`) and the polling routine (`poll`) are
-**not** re-exported here — reach them through the `resq.http` submodule only when needed
-(see [The resq.http surface](reference/http-surface.md)).
+**not** re-exported here. Reach them through the `resq.http` submodule only when needed —
+see [The resq.http surface](reference/http-surface.md).
 
 ---
 
 ## Quick sync request
 
-The constructor `timeout` is the **network** timeout (connect/read), set once. It is NOT
-the polling window.
+!!! warning "Two different timeouts"
+
+    The constructor `timeout` is the **network** timeout (connect/read), set once. It is
+    NOT the polling window.
 
 ```python
 from resq import Requests
@@ -90,7 +92,8 @@ if not r.ok:
 - `Session` — one persistent `requests.Session` reused across sync calls (shared pool and
   cookie jar). Pick it for repeated calls to the same host.
 
-Both share a single long-lived `httpx.AsyncClient` in async mode; release it via
+In async mode both flavors behave identically: each instance owns one long-lived
+`httpx.AsyncClient`, shared across that instance's calls and reloads. Release it via
 `async with` or `await client.close()`.
 
 ## Where to go next
@@ -101,10 +104,10 @@ Both share a single long-lived `httpx.AsyncClient` in async mode; release it via
 - [Reload](guide/reload.md) — re-executing a request in place.
 - [Polling](guide/polling.md) — the polling window semantics.
 
-## Preconditions
+## Behavior & preconditions
 
 - `adapter` selects mode+engine: `'requests'` (sync) or `'httpx'` (async); other values
-  raise. Fixed per instance.
+  raise `ValueError`. Fixed per instance.
 - Constructor `timeout` = network timeout (connect/read), set once; method-level
   `timeout` = polling window. Same name, different meaning by position.
 - With the method `timeout` left at `None` (default), a verb issues a single request and

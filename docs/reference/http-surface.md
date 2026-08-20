@@ -8,7 +8,7 @@ description: The resq.http submodule — the full HTTP-core surface and when to 
 need a type that the top-level `resq` package does not re-export — the response wrappers
 or the polling routine — or who prefer a single import location for the whole surface.
 
-`resq.http` is an aggregation point: it re-exports the public names of the child cells
+`resq.http` is an aggregation point: it re-exports the public names of its submodules
 and adds no logic of its own.
 
 ```python
@@ -35,10 +35,10 @@ Reach for `resq.http` only when you need a type beyond those two clients:
 - `poll` to drive a polling loop directly over a pre-built wrapper.
 - `BaseResponse` for code that must accept both the sync and async wrapper uniformly.
 
-## Preconditions
+## Behavior & preconditions
 
 - `resq.http` re-exports names; it owns no behavior. Construction, request semantics,
-  polling, and reload live in the child cells.
+  polling, and reload live in the underlying modules.
 - Clients take the `adapter` argument (`'requests'` / `'httpx'`) selecting sync vs async
   mode; one instance = one mode.
 - `poll` is one routine; its mode is fixed by the wrapper's type. `reload` is one name

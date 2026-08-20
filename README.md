@@ -3,6 +3,8 @@
 Dual-mode HTTP client — one verb surface, adapter-selected engines: `'requests'` for
 sync, `'httpx'` for async.
 
+Install: `pip install resq`.
+
 ```python
 from resq import Requests
 

@@ -15,7 +15,7 @@ import pytest
 import requests
 from resq.http.responses.responses import AsyncResponse, BaseResponse, Response
 
-from tests.http.conftest import FakeUnderlying, build_async_response, build_response, make_reexec
+from ..conftest import FakeUnderlying, build_async_response, build_response, make_reexec
 
 
 class TestResponseContract:

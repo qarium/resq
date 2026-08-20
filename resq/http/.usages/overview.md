@@ -11,10 +11,10 @@ location for the whole surface.
 and adds no logic of its own.
 
 ```python
-from resq.http import Requests, Session            # clients
-from resq.http import Response, AsyncResponse      # response wrappers
-from resq.http import BaseResponse                 # common ancestor (typing only)
-from resq.http import poll                         # polling routine (sync or async by wrapper)
+from resq.http import Requests, Session  # clients
+from resq.http import Response, AsyncResponse  # response wrappers
+from resq.http import BaseResponse  # common ancestor (typing only)
+from resq.http import poll  # polling routine (sync or async by wrapper)
 ```
 
 ---
@@ -24,7 +24,7 @@ from resq.http import poll                         # polling routine (sync or as
 The top-level `resq` package re-exports only the two clients:
 
 ```python
-from resq import Requests, Session                 # the recommended entry point
+from resq import Requests, Session  # the recommended entry point
 ```
 
 Reach for `resq.http` only when you need a type beyond those two clients:

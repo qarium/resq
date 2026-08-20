@@ -26,8 +26,9 @@ the network timeout and, for the sync mode, the flavor's engine callable:
 - `adapter='requests'` → `RequestsAdapter(timeout, sync_engine)` — `sync_engine` is
   `requests.request` for the `Requests` flavor, a bound `requests.Session.request` for
   the `Session` flavor.
-- `adapter='httpx'` → `HttpxAdapter(timeout)` — both flavors share one lazily-created,
-  long-lived `httpx.AsyncClient`.
+- `adapter='httpx'` → `HttpxAdapter(timeout)` — owns one lazily-created, long-lived
+  `httpx.AsyncClient` per client instance, shared across that instance's calls and
+  reloads.
 - any other value → error (the client raises before constructing an adapter).
 
 ## Calling the engine
@@ -48,10 +49,11 @@ this layer.
 - Async mode owns the long-lived `httpx.AsyncClient`; release it via
   `await adapter.aclose()` (idempotent, lazy-safe) or the owning client's `async with`.
 
-## Preconditions
+## Behavior & preconditions
 
 - The adapter never constructs a response wrapper and never references a client type —
   it provides execute + lifecycle only. The client builds the wrapper and the no-arg
-  re-exec closure (Architecture A).
+  re-exec closure (dependency inversion: the wrapper holds no back-reference to the
+  client).
 - `adapter.is_async` tells the client the mode (wrapper type, context-manager,
   sync-vs-async dispatch).

@@ -22,7 +22,7 @@ import pytest
 import requests
 from resq.http.adapters import Adapter, HttpxAdapter, RequestsAdapter
 
-from tests.http.conftest import FakeUnderlying
+from ..conftest import FakeUnderlying
 
 
 class TestAdapterContract:

@@ -62,7 +62,11 @@ class FakeUnderlying:
         self.reason_phrase = attrs.get("reason_phrase", "")
 
     def json(self):
-        """Return the stored heterogeneous body verbatim (no coercion)."""
+        """Return the stored heterogeneous body verbatim (no coercion).
+
+        Returns:
+            The stored ``json_return`` value, unchanged.
+        """
         return self._json_return
 
     def raise_for_status(self):
@@ -71,6 +75,10 @@ class FakeUnderlying:
         For the sync engine the raised `requests.HTTPError` carries this object
         on `.response`; for the async engine the `httpx.HTTPStatusError` does the
         same. Both let the polling tests assert ``cause.response.status_code``.
+
+        Raises:
+            requests.HTTPError: on a 4xx/5xx status when ``engine == "requests"``.
+            httpx.HTTPStatusError: on a 4xx/5xx status when ``engine == "httpx"``.
         """
         if self.status_code < 400:
             return
@@ -141,6 +149,7 @@ def build_response(side_effect, *, method="GET", path="/job/42", kwargs=None):
     reexec = make_reexec(side_effect)
     resp = Response(method, path, recipe_kwargs, reexec)
     resp._underlying = reexec()  # primary — mirrors the verb
+
     return resp, reexec
 
 
@@ -166,4 +175,5 @@ async def build_async_response(side_effect, *, method="GET", path="/job/42", kwa
     arexec = make_arexec(side_effect)
     resp = AsyncResponse(method, path, recipe_kwargs, arexec)
     resp._underlying = await arexec()  # primary — mirrors the verb
+
     return resp, arexec

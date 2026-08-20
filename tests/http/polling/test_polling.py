@@ -20,7 +20,7 @@ from resq.http.polling import polling as polling_module
 from resq.http.polling.polling import poll
 from resq.http.responses.responses import AsyncResponse, Response
 
-from tests.http.conftest import FakeUnderlying, build_async_response, build_response
+from ..conftest import FakeUnderlying, build_async_response, build_response
 
 
 def _always_after_first(value_after: float):

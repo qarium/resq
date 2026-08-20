@@ -51,17 +51,17 @@ class Adapter:
 
     @property
     def timeout(self) -> float | None:
-        """float | None: the NETWORK timeout held for the engine calls."""
+        """The NETWORK timeout held for the engine calls."""
         return self._timeout
 
     @property
     def name(self) -> str:
-        """str: the adapter name — 'requests' or 'httpx' (the bound mode/engine)."""
+        """The adapter name — 'requests' or 'httpx' (the bound mode/engine)."""
         return self._name
 
     @property
     def is_async(self) -> bool:
-        """bool: True when the bound mode is async (httpx).
+        """True when the bound mode is async (httpx).
 
         The owning client reads this to choose the wrapper type (Response vs
         AsyncResponse), the context-manager protocol, and sync-vs-async dispatch.

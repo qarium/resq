@@ -9,10 +9,10 @@ Consumers who want polling as a separate step use the `poll` routine from the
 `resq.http` surface on an already-built response wrapper.
 
 `poll` operates on an **already-built** wrapper — it never issues the first request and
-never references a client or adapter. It calls `raise_for_status`, and on a bad status
-retries through the wrapper's own `reload` until success or until the `timeout` window
-elapses. The mode (sync/async) is determined by the wrapper's type: a `Response` runs a
-sync loop; an `AsyncResponse` runs an async loop (await it).
+never references a client or adapter. It calls `raise_for_status` to check the status.
+On a bad status, it retries through the wrapper's own `reload` until success or until
+the `timeout` window elapses. The mode (sync/async) is determined by the wrapper's type:
+a `Response` runs a sync loop; an `AsyncResponse` runs an async loop (await it).
 
 ```python
 from resq.http import poll
@@ -75,16 +75,17 @@ if not r.ok:
     r.reload()                 # sync; await r.reload() for an AsyncResponse
 ```
 
-## Preconditions
+## Behavior & preconditions
 
 - `timeout` is the polling window in seconds, measured from the start of the call (not
   per attempt). `None` disables polling and returns the wrapper unchanged with no status
   check.
-- `delay` (default 1.0) sets the seconds between attempts and is ignored when `timeout`
-  is `None`.
-- Polling retries only on a bad **status** (4xx/5xx after `raise_for_status`).
-  Transport-level failures (connection, TLS, read-timeout) propagate immediately and are
-  not retried.
+- `delay` sets the seconds between attempts and is ignored when `timeout` is `None`. The
+  client verbs default it to `1.0`; when calling `poll` directly, pass it explicitly.
+- Polling retries only on a bad **status** — whatever `raise_for_status` raises on the
+  engine: 4xx/5xx for `requests`; any non-2xx for `httpx`, including unfollowed 3xx
+  such as 304. Transport-level failures (connection, TLS, read-timeout) propagate
+  immediately and are not retried.
 - `poll` does not raise on window expiry; it returns the last response.
 - The mode is fixed by the wrapper's type — a sync `Response` yields a sync loop, an
   `AsyncResponse` yields an async loop (await the call and `reload`).

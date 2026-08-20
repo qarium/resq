@@ -10,13 +10,13 @@ same attribute surface:
 ```python
 r = client.get("/users/42")
 
-r.status_code       # int
-r.ok                # bool — True for 2xx
-r.text              # str — decoded body
-r.content           # bytes — raw body
-r.headers           # dict-like, case-insensitive
-r.url               # final URL after redirects
-r.encoding          # str | None
+r.status_code  # int
+r.ok  # bool — True for 2xx
+r.text  # str — decoded body
+r.content  # bytes — raw body
+r.headers  # dict-like, case-insensitive
+r.url  # final URL after redirects
+r.encoding  # str | None
 ```
 
 ---
@@ -24,7 +24,7 @@ r.encoding          # str | None
 ## JSON body
 
 ```python
-data = r.json()           # parsed body (heterogeneous structure)
+data = r.json()  # parsed body (heterogeneous structure)
 ```
 
 ---
@@ -34,7 +34,7 @@ data = r.json()           # parsed body (heterogeneous structure)
 Opt into raising on a non-2xx status (no auto-raise by default):
 
 ```python
-r.raise_for_status()      # raises the engine HTTP error on 4xx/5xx
+r.raise_for_status()  # raises the engine HTTP error on 4xx/5xx
 ```
 
 This is the same hook the polling loop relies on.

@@ -31,8 +31,8 @@ from resq import Requests
 
 with Requests("https://api.example.com", adapter="requests", timeout=5) as client:
     r = client.get("/users/42", params={"detail": "full"})
-    print(r.status_code, r.ok)   # int, bool
-    data = r.json()              # parsed body
+    print(r.status_code, r.ok)  # int, bool
+    data = r.json()  # parsed body
 ```
 
 Every verb forwards keyword arguments (`params`, `headers`, `json`, `data`, …) verbatim
@@ -64,7 +64,7 @@ different `timeout` from the constructor one — same name, different meaning by
 from resq import Requests
 
 client = Requests("https://api.example.com", adapter="requests", timeout=5)  # network
-r = client.get("/job/42", timeout=30, delay=2)                               # poll up to 30s
+r = client.get("/job/42", timeout=30, delay=2)  # poll up to 30s
 ```
 
 Async is identical, awaited (`adapter='httpx'`).
@@ -83,7 +83,7 @@ from resq import Requests
 client = Requests("https://api.example.com", adapter="requests", timeout=5)
 r = client.get("/job/42", timeout=30, delay=2)
 if not r.ok:
-    r.reload()           # sync; await r.reload() for an AsyncResponse
+    r.reload()  # sync; await r.reload() for an AsyncResponse
 ```
 
 ---

@@ -29,7 +29,7 @@ from resq.http.clients.clients import _join_url, _normalize_path
 from resq.http.polling import polling as polling_module
 from resq.http.responses.responses import AsyncResponse, Response
 
-from tests.http.conftest import FakeUnderlying
+from ..conftest import FakeUnderlying
 
 SYNC_VERBS = ["get", "post", "put", "delete", "patch", "head", "options"]
 ASYNC_VERBS = ["aget", "apost", "aput", "adelete", "apatch", "ahead", "aoptions"]
@@ -108,12 +108,19 @@ class TestHelpers:
         assert _normalize_path("users/42") == "users/42"
         assert _normalize_path("//double") == "double"
 
+    def test_normalize_path_with_empty_string(self):
+        assert _normalize_path("") == ""
+
     def test_join_url_ensures_trailing_slash_on_base(self):
         assert _join_url(BASE_URL, "/health") == "https://api.example.com/health"
         assert _join_url(f"{BASE_URL}/", "/health") == "https://api.example.com/health"
 
     def test_join_url_parity_with_full_url(self):
         assert _join_url(f"{BASE_URL}/v1", "/users/42") == "https://api.example.com/v1/users/42"
+
+    def test_join_url_with_empty_path_returns_base_root(self):
+        assert _join_url(BASE_URL, "") == "https://api.example.com/"
+        assert _join_url(f"{BASE_URL}/", "") == "https://api.example.com/"
 
 
 class TestAdapterSelection:
@@ -236,6 +243,14 @@ class TestUnknownAdapter:
         for cls in (Requests, Session):
             with pytest.raises(ValueError, match="unknown adapter"):
                 cls(BASE_URL, adapter="aiohttp")
+
+    def test_non_string_adapter_type_raises_value_error(self):
+        # Invalid TYPES (not only unknown names) fail the same membership check;
+        # the values are hashable, so the check itself never blows up first.
+        for cls in (Requests, Session):
+            for adapter in (123, None, ("httpx",)):
+                with pytest.raises(ValueError, match="unknown adapter"):
+                    cls(BASE_URL, adapter=adapter)
 
 
 class TestUrlResolvedByClient:

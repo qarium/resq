@@ -63,37 +63,37 @@ class BaseResponse:
 
     @property
     def status_code(self) -> int:
-        """int: the HTTP status code of the underlying response."""
+        """The HTTP status code of the underlying response."""
         return self._underlying.status_code
 
     @property
     def text(self) -> str:
-        """str: the decoded body of the underlying response."""
+        """The decoded body of the underlying response."""
         return self._underlying.text
 
     @property
     def content(self) -> bytes:
-        """bytes: the raw body of the underlying response."""
+        """The raw body of the underlying response."""
         return self._underlying.content
 
     @property
     def headers(self) -> dict[str, str]:
-        """dict[str, str]: the response headers of the underlying response."""
+        """The response headers of the underlying response."""
         return self._underlying.headers
 
     @property
     def url(self) -> str:
-        """str: the final URL of the underlying response."""
+        """The final URL of the underlying response."""
         return self._underlying.url
 
     @property
     def encoding(self) -> str | None:
-        """str | None: the encoding of the underlying response."""
+        """The encoding of the underlying response."""
         return self._underlying.encoding
 
     @property
     def ok(self) -> bool:
-        """bool: whether the underlying response is a success status.
+        """Whether the underlying response is a success status.
 
         Abstract on the ancestor — the engines disagree (``requests`` exposes
         ``ok`` while ``httpx`` only has ``is_success``), so each subclass
@@ -114,7 +114,12 @@ class BaseResponse:
         return self._underlying.json()
 
     def raise_for_status(self) -> None:
-        """Raise the engine HTTP error when the underlying status is 4xx/5xx."""
+        """Raise the engine HTTP error when the underlying status is 4xx/5xx.
+
+        Raises:
+            requests.HTTPError: raised by the sync underlying response on a 4xx/5xx status.
+            httpx.HTTPStatusError: raised by the async underlying response on a 4xx/5xx status.
+        """
         return self._underlying.raise_for_status()
 
 
@@ -131,7 +136,7 @@ class Response(BaseResponse):
 
     @property
     def ok(self) -> bool:
-        """bool: ``self._underlying.ok`` (status_code < 400)."""
+        """Mirror of ``self._underlying.ok`` (status_code < 400)."""
         return self._underlying.ok
 
     def reload(self) -> None:
@@ -158,7 +163,7 @@ class AsyncResponse(BaseResponse):
 
     @property
     def ok(self) -> bool:
-        """bool: ``self._underlying.is_success`` (200..299)."""
+        """Mirror of ``self._underlying.is_success`` (200..299)."""
         return self._underlying.is_success
 
     async def reload(self) -> None:

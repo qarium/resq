@@ -29,8 +29,8 @@ from resq import Requests
 from resq.http import poll
 
 client = Requests("https://api.example.com", adapter="requests", timeout=5)
-r = client.get("/job/42")            # single request, a Response
-r = poll(r, timeout=30, delay=2)     # poll up to 30s, 2s apart
+r = client.get("/job/42")  # single request, a Response
+r = poll(r, timeout=30, delay=2)  # poll up to 30s, 2s apart
 ```
 
 The same `r` object is returned; its underlying is refreshed in place on each retry.
@@ -44,8 +44,8 @@ from resq import Requests
 from resq.http import poll
 
 async with Requests("https://api.example.com", adapter="httpx", timeout=5) as client:
-    r = await client.get("/job/42")        # single request, an AsyncResponse
-    r = await poll(r, timeout=30, delay=2) # poll up to 30s, 2s apart
+    r = await client.get("/job/42")  # single request, an AsyncResponse
+    r = await poll(r, timeout=30, delay=2)  # poll up to 30s, 2s apart
 ```
 
 ---
@@ -56,7 +56,7 @@ Most consumers never call `poll` themselves: passing a `timeout` to a client's r
 method makes it poll internally and return the already-polled wrapper.
 
 ```python
-r = client.get("/job/42", timeout=30, delay=2)   # the verb polls for you
+r = client.get("/job/42", timeout=30, delay=2)  # the verb polls for you
 ```
 
 Reach for `poll` directly only when the primary request and the polling loop must be
@@ -74,8 +74,8 @@ If the window elapses without a success-status response, the LAST response is re
 ```python
 r = poll(r, timeout=30, delay=2)
 if not r.ok:
-    ...                        # window elapsed, last status non-2xx
-    r.reload()                 # sync; await r.reload() for an AsyncResponse
+    ...  # window elapsed, last status non-2xx
+    r.reload()  # sync; await r.reload() for an AsyncResponse
 ```
 
 ---
