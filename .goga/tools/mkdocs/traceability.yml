@@ -1,0 +1,14 @@
+docs/index.md:
+  - resq
+docs/guide/clients.md:
+  - resq/http/clients
+docs/guide/responses.md:
+  - resq/http/responses
+docs/guide/reload.md:
+  - resq/http/responses
+docs/guide/polling.md:
+  - resq/http/polling
+docs/reference/http-surface.md:
+  - resq/http
+docs/architecture/adapters.md:
+  - resq/http/adapters

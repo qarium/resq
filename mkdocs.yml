@@ -1,0 +1,50 @@
+site_name: resq
+site_description: >-
+  Dual-mode HTTP client library — one verb surface, adapter-selected engines
+  (requests for sync, httpx for async), polling windows and in-place reload.
+repo_url: https://github.com/qarium/resq
+repo_name: qarium/resq
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+# Goga workflow artifacts that live under docs/ but are not user documentation.
+exclude_docs: |
+  arch/*
+  design/*
+  plans/*
+  tasks/*
+
+strict: true
+
+nav:
+  - Home: index.md
+  - Guide:
+      - "Clients & requests": guide/clients.md
+      - "Reading a response": guide/responses.md
+      - "Reload": guide/reload.md
+      - "Polling": guide/polling.md
+  - Reference:
+      - "The resq.http surface": reference/http-surface.md
+  - Internals:
+      - "Adapters": architecture/adapters.md

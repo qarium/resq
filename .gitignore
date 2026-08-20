@@ -214,3 +214,6 @@ docs/design/
 docs/arch/
 docs/tasks/
 docs/superpowers/
+
+# MkDocs
+site/
